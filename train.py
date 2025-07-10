@@ -4,53 +4,62 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-torch.manual_seed(1337) # For reproducibility
+# For reproducibility
+torch.manual_seed(1337) 
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# Use computation available
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
 
+# HYPERPARAMETERS
+# ---------------
+seq_size = 8 
+batch_size = 32
+training_steps = 10000
+learning_rate = 1e-3
+eval_iters = 200
+eval_interval = 300
+# ---------------
+
+# PREPARE TRAINING AND VALIDATION DATA
+# ------------------------------------
 # Load train text file
 with open('data/tinyshakespeare.txt', 'r') as f:
     text = f.read()
     
 text_ids = char_level_tokenizer.encode(text)
-
 data = torch.tensor(text_ids, dtype=torch.long)
 
-# SPLITS: TRAIN AND VALIDATION DATA
-# --------------------------------
-# Split data into trian and validation sets
+# Generate splits: train , val
 ratio = 0.9 # 90% for training, 10% for validation
 idx = int(ratio * len(data)) 
 train_data = data[:idx] # train split
 val_data = data[idx:] # validation split
 
-# BATCHES AND SEQUENCES
-# -------------------
-
-
+# Batch generator
 def get_batch(split_type, batch_size, seq_size):
     """
     The transformer receives batches of sequences of the train data
     1 batch contains batch_size sequences of seq_size tokens
     This can be sampled to seq_size+1 examples on how to predict the next token: input(x) and target(y) pairs.
 
-    seq_size =  8 # Size of the input sequence. Maximum context length for the predictions
-    batch_size = 4 # Number of sequences in a batch to be processed in parallel. In this case, 4 sequences of 8 tokens each
+    seq_size =  5 # Size of the input sequence. Maximum context length for the predictions
+    batch_size = 4 # Number of sequences in a batch to be processed in parallel. In this case, 4 sequences of 5 tokens each
 
-    1 batch contains 4 sequences of 8 tokens. 
-    This can be sampled to 8+1 examples on how to predict the next token: input x and target y pairs.
-    sequence = [[23,30,31,7,21,14,0,1]]]
-    input x = [[23]], target y = [[30]]
-    input x = [[23,30]], target y = [[31]]
-    input x = [[23,30,31]], target y = [[7]]
-    input x = [[23,30,31, 7]], target y = [[21]]
-    input x = [[23,30,31, 7, 21]], target y = [[14]]
-    input x = [[23,30,31, 7, 21, 14]], target y = [[0]]
-    input x = [[23,30,31, 7, 21, 14, 0]], target y = [[1]]
+    1 batch contains 4 sequences of 5 tokens. 
+    This can be sampled to 5+1 examples on how to predict the next token: input x and target y pairs.
+    
+        sequence = [[23,30,31,7,21]]]
+        
+            input x = [[23]], target y = [[30]]
+            input x = [[23,30]], target y = [[31]]
+            input x = [[23,30,31]], target y = [[7]]
+            input x = [[23,30,31, 7]], target y = [[21]]
+            input x = [[23,30,31, 7, 21]], target y = [[14]]
+
 
     In a batch:
-    x batch = [[23,30,31,7,21,14,0,1], [...], [...], [...]]
-    y batch = [[30,31,7,21,14,0,1,2], [...], [...], [...]]
+        x batch = [[23,30,31,7,21,14,0,1], [...], [...], [...]]
+        y batch = [[30,31,7,21,14,0,1,2], [...], [...], [...]]
     """
     data = train_data if split_type == "train" else val_data
     starting_idx = torch.randint(len(data) - seq_size, (batch_size,)) # Randomly select STARTING indices for each sequence in the batch
@@ -59,7 +68,8 @@ def get_batch(split_type, batch_size, seq_size):
     xb, yb = xb.to(device), yb.to(device) # Move to device (GPU or CPU)
     return xb, yb
 
-
+# MODEL
+# ------
 class BigramLanguageModel(nn.Module):
     def __init__(self, d_model, vocab_size):
         super().__init__()
@@ -96,7 +106,6 @@ class BigramLanguageModel(nn.Module):
         Generates the next token in the sequence in all the batch dimensions in the time dimension :
         (BxT) --> BxT+1, BxT+2, BxT+3, ...., BxT+max_new_tokens
         """
-
         for _ in range(max_new_tokens):
             # get the predictions
             logits, _ = self(idx) # (B, T, C) # para cada batch B, los logits de cada time step 1,..., T para los C elementos del vocabulario
@@ -114,32 +123,56 @@ class BigramLanguageModel(nn.Module):
             idx = torch.cat((idx, idx_next), dim = 1) # (B, T+1) concatenación del next token con el resto de la secuencia
             
         return idx
-    
-# INTANTIATE MODEL
+
+# Model instance
 m = BigramLanguageModel(d_model=char_level_tokenizer.n_vocab, vocab_size=char_level_tokenizer.n_vocab)
 model = m.to(device)
 
-# INSTANTIATE OPTIMIZER
-optimizer = torch.optim.AdamW(model.parameters(), lr = 1e-3) # PyTorch optimizer: takes the gradients and updates paramenters
+# OPTIMIZER
+# ---------
+# PyTorch optimizer: takes the gradients and updates paramenters
+optimizer = torch.optim.AdamW(model.parameters(), lr = learning_rate) 
 
-# TRAINING
-seq_size = 8 
-batch_size = 32
-training_steps = 10000
+
+# TRAINING LOOP
+# -------------
+@torch.no_grad()
+def estimate_loss():
+    """
+    Calculates mean loss over eval_iters batches, for each the training and the validation splits.
+    """
+    mean_losses = {}
+    model.eval() # indicate the model is in 'evaluation' mode
+    for split in ['train', 'val']:
+        losses = torch.zeros(eval_iters)
+        for k in range(eval_iters): 
+            X,Y = get_batch(split, batch_size=batch_size, seq_size=seq_size)
+            _, loss = model(X,Y)
+            losses[k] = loss.item()
+        mean_losses[split] = losses.mean()
+    model.train() # indicate the model is in 'training' mode
+    return mean_losses
 
 # In each time step a different batch is sampled randomly with 32 sequences of 8 tokens
 for step in range(training_steps):
+    
+    # every eval_interval steps pause training and evaluate the mean loss on train and val sets on eval_iters batches
+    if step % eval_interval == 0:
+        mean_losses = estimate_loss()
+        print(f"Step {step}: train loss {mean_losses['train']:.4f}, val loss {mean_losses['val']:.4f}")
 
     # sample a batch of data (this is a random batch from the train data)
     xb, yb = get_batch(split_type='train', batch_size=batch_size, seq_size=seq_size) # Get batch of inputs / targets
-    logits, loss = model(xb, yb) # Forward pass
-    if step == 0: print(f"Initial loss --> {loss.item()}") 
+    
+    # evaluate the loss (no need for the logits now)
+    _, loss = model(xb, yb) # Forward pass
     optimizer.zero_grad(set_to_none=True) # Clear gradients
     loss.backward() # Backward pass: PyTorch automatically computes gradients of the loss with respect to all model parameters, using autograd
-    optimizer.step() # Update weights: This is where the model is actually updated. The optimizer (e.g., Adam, SGD) looks at current weights, gradients and internal state (like momentum, learning rate, etc.) and then adjusts the weights to reduce the loss.
+    optimizer.step() # Update model weights
 
 print(f"Final loss --> {loss.item()}") 
 
 # INFERENCE
+# ---------
 context = torch.zeros((1,1), dtype = torch.long, device=device)
 print("Generated text: <START>", colored(char_level_tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist()), "cyan"), "<END>")
