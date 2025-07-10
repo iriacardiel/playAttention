@@ -12,12 +12,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # HYPERPARAMETERS
 # ---------------
-seq_size = 8 
-batch_size = 32
+seq_size = 8 # Number of tokens in the input sequence. Maximum context length for the predictions
+batch_size = 32 # Number of sequences in a batch to be processed in parallel
 training_steps = 10000
-learning_rate = 1e-3
-eval_iters = 200
-eval_interval = 300
+learning_rate = 1e-3 
+eval_iters = 200 # NUmber of batches to evaluate the loss on train and val splits
+eval_interval = 300 # Number of training steps between evaluations
+n_embd = 32 # Embedding dimension: size of the embedding vector for each token
 # ---------------
 
 # PREPARE TRAINING AND VALIDATION DATA
@@ -28,6 +29,7 @@ with open('data/tinyshakespeare.txt', 'r') as f:
     
 text_ids = char_level_tokenizer.encode(text)
 data = torch.tensor(text_ids, dtype=torch.long)
+vocab_size=char_level_tokenizer.n_vocab
 
 # Generate splits: train , val
 ratio = 0.9 # 90% for training, 10% for validation
@@ -71,22 +73,27 @@ def get_batch(split_type, batch_size, seq_size):
 # MODEL
 # ------
 class BigramLanguageModel(nn.Module):
-    def __init__(self, d_model, vocab_size):
+    def __init__(self):
         super().__init__()
         # Each token reads off the logits for the next token from a lookup table
         # Randomly initialized embedding layer of size (vocab_size, vocab_size)
         
-        self.emmbeding_layer = nn.Embedding(vocab_size, d_model) # C = vocab_size
-    
-    def forward(self, idx, targets=None):
+        self.emmbeding_layer = nn.Embedding(vocab_size, n_embd) # Vocab_size = vocabulary size, embedding dimension = n_embd. Embedding layer to convert token indices to embeddings
+        self.position_embbedings_layer = nn.Embedding(seq_size, n_embd) # Positional embeddings for each token in the sequence
+        # TODO: self-attention, FFN, Residual connections, LayerNorm, etc.
+        self.llm_head = nn.Linear(n_embd, vocab_size) # Linear layer to project the embeddings to the vocabulary size
         
+    def forward(self, idx, targets=None):
+        B,T = idx.shape # B: batch size, T: sequence length
         # idx (xb) input tokens shape: (B,T), target tokens (yb) shape: (B,T)
         # B: batch size, T: sequence length
         # Access the embedding table to get the logits for the next token is equivalent to multiplying the one-hot encoded vector of the input token with the embedding matrix
         
-        embeddings = self.emmbeding_layer(idx) # Score fo the next token on the sequence (B,T,C) 
+        token_embeddings = self.emmbeding_layer(idx) # (B,T,n_embd) 
+        pos_embeddings = self.position_embbedings_layer(torch.arange(T, device=device)) # (T,n_embd)
+        x = token_embeddings + pos_embeddings # (B,T,n_embd) + (T,n_embd) --> (B,T,n_embd)
         
-        logits = embeddings # in this case, the logits are the outputs of the unique layer
+        logits = self.llm_head(x) # (B,T,n_embd)
         
         # For inference, no need to calculate loss
         if targets is None:
@@ -94,8 +101,8 @@ class BigramLanguageModel(nn.Module):
         # For training, calculate loss
         else:
             # Reshaping for the loss
-            B,T,C = logits.shape
-            logits = logits.view(B*T,C)
+            B,T,n_embd = logits.shape
+            logits = logits.view(B*T,n_embd)
             targets = targets.view(B*T)
             loss = F.cross_entropy(logits, targets)
         
@@ -106,7 +113,9 @@ class BigramLanguageModel(nn.Module):
         Generates the next token in the sequence in all the batch dimensions in the time dimension :
         (BxT) --> BxT+1, BxT+2, BxT+3, ...., BxT+max_new_tokens
         """
-        for _ in range(max_new_tokens):
+        new_token_count = min(max_new_tokens, seq_size) # Number of new tokens to generate, cannot exceed seq_size
+        for _ in range(new_token_count):
+            
             # get the predictions
             logits, _ = self(idx) # (B, T, C) # para cada batch B, los logits de cada time step 1,..., T para los C elementos del vocabulario
             
@@ -125,7 +134,7 @@ class BigramLanguageModel(nn.Module):
         return idx
 
 # Model instance
-m = BigramLanguageModel(d_model=char_level_tokenizer.n_vocab, vocab_size=char_level_tokenizer.n_vocab)
+m = BigramLanguageModel()
 model = m.to(device)
 
 # OPTIMIZER
@@ -175,4 +184,4 @@ print(f"Final loss --> {loss.item()}")
 # INFERENCE
 # ---------
 context = torch.zeros((1,1), dtype = torch.long, device=device)
-print("Generated text: <START>", colored(char_level_tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist()), "cyan"), "<END>")
+print("Generated text: <START>", colored(char_level_tokenizer.decode(model.generate(context, max_new_tokens=10)[0].tolist()), "cyan"), "<END>")
