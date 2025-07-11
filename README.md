@@ -30,7 +30,7 @@ Results with:
 - TOTAL TIME: 1min 44s on CPU
 - Final loss : 1.8914074897766113
 
-![alt text](image.png)
+![alt text](images/image.png)
 
 - 3 Tranformer block
 - No skip Connections
@@ -39,7 +39,7 @@ Results with:
 - TOTAL TIME: 3min 41s on CPU
 - Final loss : 2.0466578006744385
 
-![alt text](image-1.png)
+![alt text](images/image-1.png)
 
 - 3 Tranformer block
 - skip Connections
@@ -49,7 +49,7 @@ Results with:
 - Final loss : 1.8440515995025635
 - Some overfitting going on!
 
-![alt text](image-2.png)
+![alt text](images/image-2.png)
 
 
 - 3 Tranformer block
@@ -60,5 +60,5 @@ Results with:
 - Final loss : 1.831192970275879
 - Some overfitting going on!
 
-![alt text](image-3.png)
+![alt text](images/image-3.png)
 

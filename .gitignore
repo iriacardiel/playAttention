@@ -6,6 +6,3 @@ __pycache__/
 *.pyd
 *.pkl
 *.db
-reports/*.png
-reports/*.csv
-reports/*.md

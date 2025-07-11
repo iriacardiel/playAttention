@@ -51,37 +51,42 @@ N_layers = 3 # Number of transformer blocks in the model
 dropout = 0 # Dropout rate for regularization (to avoid overfitting)
 
 # Training Parameters
-training_steps = 2000 # Number of training steps
+training_steps = 20000 # Number of training steps
 learning_rate = 1e-3 
 eval_iters = 200 # NUmber of batches to evaluate the loss on train and val splits
-eval_interval = 500 # Number of training steps between evaluations
+eval_interval = 200 # Number of training steps between evaluations
 train_val_ratio = 0.9 # 90% for training, 10% for validation
 
 # File paths
-current_time = datetime.now()
+TRAIN_ID = datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
 
 DATA_PATH = 'data/tinyshakespeare.txt'
-REPORT_DIR = 'reports'
-CSV_FILE = f'reports/training_losses_{current_time.strftime("%Y%m%d_%H%M%S")}.csv'
-PLOT_FILE = f'reports/loss_curves_{current_time.strftime("%Y%m%d_%H%M%S")}.png'
-REPORT_FILE = f'reports/training_report_{current_time.strftime("%Y%m%d_%H%M%S")}.md'
+REPORT_DIR = f'reports/training_{TRAIN_ID}'
+CSV_FILE = f'{REPORT_DIR}/losses.csv'
+PLOT_FILE = f'{REPORT_DIR}/losses.png'
+REPORT_FILE = f'{REPORT_DIR}/report.md'
 
 print(f"\n{'='*60}")
 print("HYPERPARAMETERS")
 print('='*60)
-print(f"Model Architecture:")
-print(f"  seq_size        : {seq_size} tokens (max context length)")
-print(f"  batch_size      : {batch_size} sequences")
-print(f"  n_embd          : {n_embd} (embedding dimension)")
-print(f"  num_heads       : {num_heads} heads")
-print(f"  N_layers        : {N_layers} transformer blocks")
-print(f"  dropout         : {dropout}")
-print(f"\nTraining Parameters:")
-print(f"  training_steps  : {training_steps:,} steps")
-print(f"  learning_rate   : {learning_rate}")
-print(f"  eval_iters      : {eval_iters} batches")
-print(f"  eval_interval   : {eval_interval} steps")
-print(f"  train_val_ratio : {train_val_ratio}")
+
+hyperparams_summary = (f""
+    f"\nModel Architecture:\n"
+    f"  seq_size        : {seq_size} tokens (max context length)\n"
+    f"  batch_size      : {batch_size} sequences\n"
+    f"  n_embd          : {n_embd} (embedding dimension)\n"
+    f"  num_heads       : {num_heads} heads\n"
+    f"  N_layers        : {N_layers} transformer blocks\n"
+    f"  dropout         : {dropout}\n"
+    f"\n\nTraining Parameters:\n"
+    f"  training_steps  : {training_steps:,} steps\n"
+    f"  learning_rate   : {learning_rate}\n"
+    f"  eval_iters      : {eval_iters} batches\n"
+    f"  eval_interval   : {eval_interval} steps\n"
+    f"  train_val_ratio : {train_val_ratio}\n"
+)
+
+print(hyperparams_summary)
 
 
 # =============================================================================
@@ -91,7 +96,7 @@ print(f"\n{'='*60}")
 print("DATA PREPARATION")
 print('='*60)
 
-def load_and_prepare_data():
+def load_and_prepare_data() -> Tuple[torch.Tensor, torch.Tensor, int]:
     """
     Load text data, tokenize it, and split into train/validation sets.
     
@@ -104,7 +109,6 @@ def load_and_prepare_data():
     try:
         with open(DATA_PATH, 'r', encoding='utf-8') as f:
             text = f.read()
-        print(f"✓ Loaded text file: {len(text):,} characters")
     except FileNotFoundError:
         raise FileNotFoundError(f"Data file not found: {DATA_PATH}")
     
@@ -112,18 +116,25 @@ def load_and_prepare_data():
     text_ids = char_level_tokenizer.encode(text)
     data = torch.tensor(text_ids, dtype=torch.long)
     vocab_size = char_level_tokenizer.n_vocab
-    print(f"✓ Tokenized text: {len(data):,} tokens")
-    print(f"✓ Vocabulary size: {vocab_size} unique tokens")
+
 
     # Generate splits: train , val
     split_idx = int(train_val_ratio * len(data)) 
     train_data = data[:split_idx] # train split
     val_data = data[split_idx:] # validation split
     
-    print(f"✓ Data split:")
-    print(f"  Training:   {len(train_data):,} tokens ({len(train_data)/len(data)*100:.1f}%)")
-    print(f"  Validation: {len(val_data):,} tokens ({len(val_data)/len(data)*100:.1f}%)")
+
     
+    data_preparation_summary = (
+        f"\nTokenziation summary:\n"
+        f"  Tokenized text: {len(data):,} tokens\n"
+        f"  Vocabulary size: {vocab_size} unique tokens\n"
+        f"\nData split:\n"
+        f"  Training:   {len(train_data):,} tokens ({len(train_data)/len(data)*100:.1f}%)\n"
+        f"  Validation: {len(val_data):,} tokens ({len(val_data)/len(data)*100:.1f}%)\n"
+    )
+    print(data_preparation_summary)
+
     return train_data, val_data, vocab_size
 
 # Load and prepare data
@@ -499,16 +510,19 @@ model = GPTLanguageModel().to(device)
 total_params = sum(p.numel() for p in model.parameters())
 trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-print(f"✓ Model initialized:")
-print(f"  Total parameters: {total_params:,}")
-print(f"  Trainable parameters: {trainable_params:,}")
-print(f"  Model size: ~{total_params * 4 / 1024**2:.2f} MB (float32)")
-
 # Initialize optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr = learning_rate) 
-print(f"✓ Optimizer: AdamW with learning rate {learning_rate}")
 
+model_summary = (
+    f"\nModel Details:\n"
+    f"  Architecture: GPT-style Transformer\n"
+    f"  Total parameters: {total_params:,}\n"
+    f"  Trainable parameters: {trainable_params:,}\n"
+    f"  Model size: ~{total_params * 4 / 1024**2:.2f} MB (float32)\n"
+    f"\n\nOptimizer: AdamW with learning rate {learning_rate}\n"
+)
 
+print(model_summary)
 
 # =============================================================================
 # TRAINING UTILITIES
@@ -591,25 +605,18 @@ print("TRAINING")
 print('='*60)
 
 # Initialize lists to store losses for plotting and logging
-train_losses, val_losses, steps_recorded = [], [], []
+train_losses, val_losses, steps_recorded, final_losses = [], [], [], {}
 # Initialize visualization plot
 fig, ax, train_line, val_line = set_up_visualization()
 
-print(f"Training configuration:")
-print(f"  Steps: {training_steps:,}")
-print(f"  Batch size: {batch_size}")
-print(f"  Evaluation every {eval_interval} steps")
-print(f"  Logging to: {CSV_FILE}")
-print(f"  Plots saved to: {PLOT_FILE}")
 print(f"\nStarting training loop...")
 
 start_train = datetime.now() # Record start time of training
 # In each time step a different batch is sampled randomly with 32 sequences of 8 tokens
 for step in trange(training_steps, desc="Training steps", unit="step", disable=False):
-    
     # EVALUATION PHASE
     if step % eval_interval == 0: # Every eval_interval steps pause training and evaluate the mean loss on train and val sets on eval_iters batches
-
+        
         losses = estimate_loss()
         
         # Update visualization
@@ -634,76 +641,110 @@ for step in trange(training_steps, desc="Training steps", unit="step", disable=F
     # Update model parameters
     optimizer.step() # Update model weights
 
+# Estimate loss after the last training step
+# This is to ensure the final losses are recorded even if the last step is not an evaluation 
+losses = estimate_loss()    
+# Update visualization
+update_visualization(
+    training_steps-1, losses['train'], losses['val'],
+    train_losses, val_losses, steps_recorded,
+    fig, ax, train_line, val_line
+)
+
+
 end_train = datetime.now() # Record start time of training
 total_time = end_train - start_train
-print(f"\nTraining completed in {total_time}")
+final_losses = losses # Store final losses for reporting
+
+training_summary = (
+    f"\nTraining Summary:\n"
+    f"  Final training loss: {final_losses['train']:.4f}\n"
+    f"  Final validation loss: {final_losses['val']:.4f}\n"
+    f"  Training duration: {total_time}\n"
+)
+print(training_summary)
+
 # Turn off Plot
 plt.close(fig)
 
-# Final evaluation
-final_losses = estimate_loss()
-print(f"\nTraining completed!")
-print(f"Final train loss: {final_losses['train']:.4f}")
-print(f"Final validation loss: {final_losses['val']:.4f}")
+
+
+# =============================================================================
+# INFERENCE & TEXT GENERATION
+# =============================================================================
+context = torch.zeros((1,1), dtype = torch.long, device=device)
+generated_text = char_level_tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist())
+print("Generated text: <START>", colored(generated_text, "cyan"), "<END>")
+
+
+# =============================================================================
+# REPORT GENERATION
+# =============================================================================
 
 report = f"""# GPT Training Report
 
-**Training Session:** {current_time.strftime("%Y%m%d_%H%M%S")}  
+**Training Session:** `{TRAIN_ID}`
+**Training Device:** `{device}`
 
-## 📊 Training Configuration
+## HYPERPARAMETERS
 
-| Parameter | Value |
+### **Model Architecture**
+
+| Hyperparameter | Value |
 |-----------|-------|
-| **Model Architecture** | |
-| Sequence Length | {seq_size} tokens |
-| Batch Size | {batch_size} |
-| Embedding Dimension | {n_embd} |
-| Number of Heads | {num_heads} |
-| Number of Layers | {N_layers} |
-| Dropout Rate | {dropout} |
-| **Training Parameters** | |
-| Total Training Steps | {training_steps:,} |
-| Learning Rate | {learning_rate} |
-| Evaluation Interval | {eval_interval} steps |
-| Evaluation Iterations | {eval_iters} |
-| Train/Val Split | {train_val_ratio:.1%} / {1-train_val_ratio:.1%} |
-| **Model Size** | |
-| Total Parameters | {total_params:,} |
-| Trainable Parameters | {trainable_params:,} |
-| Model Size | ~{total_params * 4 / 1024**2:.2f} MB |
+| seq_size | `{seq_size}` tokens |
+| batch_size | `{batch_size}` |
+| n_embd (dim) | `{n_embd}` |
+| num_heads | `{num_heads}` |
+| N_layers | `{N_layers}` |
+| dropout | `{dropout}` |
 
-## 🎯 Training Results
+### **Training**
 
-### Final Performance
-- **Final Training Loss:** `{final_losses['train']:.6f}`
-- **Final Validation Loss:** `{final_losses['val']:.6f}`
-- **Training duration:** 
-- **Train start**: {start_train.strftime("%Y%m%d_%H%M%S")}
-- **Train end**: {end_train.strftime("%Y%m%d_%H%M%S")}
-- **Total time**: {total_time}
+| Hyperparameter | Value |
+|-----------|-------|
+| training_steps | `{training_steps:,}` |
+| learning_rate | `{learning_rate}` |
+| eval_interval | `{eval_interval}` steps |
+| eval_iters | `{eval_iters}` |
+| Train/Val Split | `{train_val_ratio:.1%}` / `{1-train_val_ratio:.1%}` |
 
-## 📈 Training Progress
-
-![Training and Validation Loss](loss_curves_{current_time.strftime("%Y%m%d_%H%M%S")}.png)
-
-## 🔧 Data Information
+## DATA PREPARATION
 
 | Metric | Value |
 |--------|-------|
-| **Dataset** | {DATA_PATH} |
-| **Vocabulary Size** | {vocab_size:,} tokens |
-| **Training Tokens** | {len(train_data):,} |
-| **Validation Tokens** | {len(val_data):,} |
-| **Total Dataset Size** | {len(train_data) + len(val_data):,} tokens |
+| **Dataset** | `{DATA_PATH}` |
+| **Vocabulary Size** | `{vocab_size:,}` tokens |
+| **Training Tokens** | `{len(train_data):,}` tokens ({train_val_ratio:.1%})|
+| **Validation Tokens** | `{len(val_data):,}` tokens ({1-train_val_ratio:.1%})|
+| **Total Dataset Size** | `{len(train_data) + len(val_data):,}` tokens |
 
-## 🚀 Model Performance Summary
+## MODEL DETAILS
 
-{'🎉 **Training Successful!**' if final_losses['val'] < 2.0 else '⚠️ **Consider More Training**'}
+| Metric | Value |
+|--------|-------|
+| **Total Parameters** | `{total_params:,}` |
+| **Trainable Parameters** | `{trainable_params:,}` |
+| **Model Size** | ~`{total_params * 4 / 1024**2:.2f}` MB (float32) |
+| **Optimizer** | AdamW with learning rate `{learning_rate}` |
 
-The model has been trained for {training_steps:,} steps with a final validation loss of {final_losses['val']:.6f}. 
+
+## 🎯 Training Results
+
+- **Final Training Loss:** `{final_losses['train']:.4f}`
+- **Final Validation Loss:** `{final_losses['val']:.4f}`
+- **Training duration:** `{total_time}`
+
+## Generated example:
+```
+{generated_text}
+```
+
+## 📈 Training Progress
+
+<img src="losses.png" alt="Training and Validation Loss" width="80%"/>
 
 """
-    
 
 with open(REPORT_FILE, 'w', encoding='utf-8') as f:
     f.write(report)
@@ -717,8 +758,3 @@ print(f"📈 Loss plot saved to: {PLOT_FILE}")
 
 
 
-# =============================================================================
-# INFERENCE & TEXT GENERATION
-# =============================================================================
-context = torch.zeros((1,1), dtype = torch.long, device=device)
-print("Generated text: <START>", colored(char_level_tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist()), "cyan"), "<END>")
