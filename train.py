@@ -21,7 +21,6 @@ seq_size = 8 # Number of tokens in the input sequence. Maximum context length fo
 batch_size = 32 # Number of sequences in a batch to be processed in parallel
 n_embd = 32 # Embedding dimension: size of the embedding vector for each token
 num_heads = 4
-head_size = n_embd // num_heads # head_size is a divisor of n_embd, the embedding dimension
 training_steps = 20000 # Number of training steps
 learning_rate = 1e-3 
 eval_iters = 200 # NUmber of batches to evaluate the loss on train and val splits
@@ -34,7 +33,6 @@ print(f"  seq_size        : {seq_size} tokens")
 print(f"  batch_size      : {batch_size} sequences")
 print(f"  n_embd          : {n_embd}")
 print(f"  num_heads       : {num_heads} heads")
-print(f"  head_size       : {head_size}")
 print(f"  training_steps  : {training_steps} steps")
 print(f"  learning_rate   : {learning_rate}")
 print(f"  eval_iters      : {eval_iters} steps")
@@ -168,11 +166,28 @@ class FeedForward(nn.Module):
         self.activation = nn.ReLU()
 
     def forward(self, x):
-        out = self.linear(x) # rotation
-        out = self.activation(out) # squash
-        #out = self.linear2(out) # rotation
-        return out
+        x = self.linear(x) # rotation
+        x = self.activation(x) # squash
+        #x = self.linear2(x) # rotation
+        return x
 
+class TransformerBlock(nn.Module):
+    """
+    Transformer block with self-attention and feed-forward neural network.
+    
+    This block consists of a multi-head self-attention layer followed by a feed-forward neural network.
+    It also includes residual connections and layer normalization.
+    """
+    def __init__(self, n_embd, num_heads):
+        super().__init__()
+        head_size = n_embd // num_heads # head_size is a divisor of n_embd, the embedding dimension
+        self.mha = MultiHeadAttention(num_heads, head_size) # Multi-head self-attention
+        self.ffn = FeedForward(n_embd) # Feed-forward neural network
+        
+    def forward(self, x):
+        x = self.mha(x) # Residual connection + LayerNorm after self-attention
+        x = x + self.ffn(x) # Residual connection + LayerNorm after feed-forward network
+        return x
     
 
 class BigramLanguageModel(nn.Module):
@@ -183,9 +198,9 @@ class BigramLanguageModel(nn.Module):
         
         self.emmbeding_layer = nn.Embedding(vocab_size, n_embd) # Vocab_size = vocabulary size, embedding dimension = n_embd. Embedding layer to convert token indices to embeddings
         self.position_embbedings_layer = nn.Embedding(seq_size, n_embd) # Positional embeddings for each token in the sequence
-        # TODO: self-attention, FFN, Residual connections, LayerNorm, etc.
-        self.mha = MultiHeadAttention(num_heads, head_size) # Single head of self-attention
-        self.ffn = FeedForward(n_embd) # Feed-forward neural network with a hidden layer
+        self.transformer_block_1= TransformerBlock(n_embd, num_heads)
+        self.transformer_block_2= TransformerBlock(n_embd, num_heads)
+        self.transformer_block_3= TransformerBlock(n_embd, num_heads)
         self.llm_head = nn.Linear(n_embd, vocab_size) # Linear layer to project the embeddings to the vocabulary size
         
     def forward(self, idx, targets=None):
@@ -197,8 +212,9 @@ class BigramLanguageModel(nn.Module):
         token_embeddings = self.emmbeding_layer(idx) # (B,T,n_embd) 
         pos_embeddings = self.position_embbedings_layer(torch.arange(T, device=device)) # (T,n_embd)
         x = token_embeddings + pos_embeddings # (B,T,n_embd) + (T,n_embd) --> (B,T,n_embd)
-        x = self.mha(x) # (B,T,n_embd) 
-        x = self.ffn(x) # (B,T,n_embd) 
+        x = self.transformer_block_1(x) # (B,T,n_embd)
+        x = self.transformer_block_2(x) # (B,T,n_embd) 
+        x = self.transformer_block_3(x) # (B,T,n_embd) 
         logits = self.llm_head(x) # (B,T,vocab_size)
         
         

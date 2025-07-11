@@ -22,5 +22,18 @@ From jupyter notebook:
 ```
 
 # Training
-Results without Add + LayerNorm. 
+Results with:
+
+- 1 Tranformer block
+- No skip Connections
+- No Normalization 
+- TOTAL TIME: 1min 44s
+
 ![alt text](image.png)
+
+- 3 Tranformer block
+- No skip Connections
+- No Normalization
+- TOTAL TIME: 3min 41s
+
+![alt text](image-1.png)
