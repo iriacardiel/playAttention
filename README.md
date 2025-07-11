@@ -21,44 +21,51 @@ From jupyter notebook:
 !wget https://www.youtube.com/watch?v=kCc8FmEb1nY&list=PLAqhIrjkxbuWI23v9cThsA9GvCAUhRvKZ&index=7
 ```
 
-# Training
-Results with:
 
-- 1 Tranformer block
-- No skip Connections
-- No Normalization 
-- TOTAL TIME: 1min 44s on CPU
-- Final loss : 1.8914074897766113
+# Without training:
 
-![alt text](images/image.png)
+```
 
-- 3 Tranformer block
-- No skip Connections
-- No Normalization
-- Some overfitting going on!
-- TOTAL TIME: 3min 41s on CPU
-- Final loss : 2.0466578006744385
+ Eu-a oyihj ldF
+;
+wA l3tLdo
+e eRisN:rAy tl
+ItRtk;d hotnw t?ceale D t iwa aoc.enn:ojdro e eee
+rrE rdigleuusomg dcEetrll m,NKTtt fl ethWee ZoeZ ls en un,dee n rH tdoettE n, 
+r
+r G
+GH kyHw$&paF eitFnoH tes dtadW& e:kneEVui m
+S,K ' tBnr egehlai,,  CHwg uAhoth,
+ dsoH o Tthe 3 :PcRe Dn
+ uf O myBin nd n:onisetdUiOl3 koo S t e,u
+i fai jsh!bth irnd cegaIdiri Y mj
+,-ejo: ahyoqojf m aaFned e men
+d e eIao ,gr
+Zu
+ wOy; k eTeIUn s H' mtialafhDryo
+seuueiFjdrhdXI
 
-![alt text](images/image-1.png)
+. ld edi hpn laorEed mrntdtoA ah?cYuso
+Mlg,thgf
+```
 
-- 3 Tranformer block
-- skip Connections
-- d_ffn = 4*n_emb
-- No Normalization
-- TOTAL TIME: 4min 05s on CPU
-- Final loss : 1.8440515995025635
-- Some overfitting going on!
+# After training on CPU:
 
-![alt text](images/image-2.png)
+```
 
+CAMILARET:
+Who marry Cadowns a vill to his baffaces one been
 
-- 3 Tranformer block
-- skip Connections
-- d_ffn = 4*n_emb
-- PRE-NORM Normalization in every transformer block (for the MHA and FFN)
-- TOTAL TIME: 4min 24s on CPU
-- Final loss : 1.831192970275879
-- Some overfitting going on!
+Som frink, as cat we their in cornames of love: 'twive a pagenclemad,
+And hensm,--
 
-![alt text](images/image-3.png)
+Both the had your ince of remel larman of it good, he talk.
 
+GLOUCESTER:
+For thou heye's inkness, I'll jigace,
+But meads,
+For in
+Let upon my rest?
+ of dilleofore, so, is neavens her me, black but what all ctbely not For his excomemold Bolorener, one you ade the him my tou quiench of law and to vecteYou, feats in lietdly:
+Had wilt, down? Gent more is ye
+```
