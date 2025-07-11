@@ -20,3 +20,7 @@ From jupyter notebook:
 ```
 !wget https://www.youtube.com/watch?v=kCc8FmEb1nY&list=PLAqhIrjkxbuWI23v9cThsA9GvCAUhRvKZ&index=7
 ```
+
+# Training
+Results without Add + LayerNorm. 
+![alt text](image.png)

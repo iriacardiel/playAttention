@@ -13,17 +13,32 @@ torch.manual_seed(1337)
 
 # Use computation available
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
+print(f"Training compute device --> {device}\n")
 
 # HYPERPARAMETERS
 # ---------------
 seq_size = 8 # Number of tokens in the input sequence. Maximum context length for the predictions
 batch_size = 32 # Number of sequences in a batch to be processed in parallel
+n_embd = 32 # Embedding dimension: size of the embedding vector for each token
+num_heads = 4
+head_size = n_embd // num_heads # head_size is a divisor of n_embd, the embedding dimension
 training_steps = 20000 # Number of training steps
 learning_rate = 1e-3 
 eval_iters = 200 # NUmber of batches to evaluate the loss on train and val splits
 eval_interval = 500 # Number of training steps between evaluations
-n_embd = 32 # Embedding dimension: size of the embedding vector for each token
+train_val_ratio = 0.9 # 90% for training, 10% for validation
 # ---------------
+print(f"Hyperparameters")
+
+print(f"  seq_size        : {seq_size} tokens")
+print(f"  batch_size      : {batch_size} sequences")
+print(f"  n_embd          : {n_embd}")
+print(f"  num_heads       : {num_heads} heads")
+print(f"  head_size       : {head_size}")
+print(f"  training_steps  : {training_steps} steps")
+print(f"  learning_rate   : {learning_rate}")
+print(f"  eval_iters      : {eval_iters} steps")
+print(f"  eval_interval   : {eval_interval} steps")
 
 # PREPARE TRAINING AND VALIDATION DATA
 # ------------------------------------
@@ -34,10 +49,10 @@ with open('data/tinyshakespeare.txt', 'r') as f:
 text_ids = char_level_tokenizer.encode(text)
 data = torch.tensor(text_ids, dtype=torch.long)
 vocab_size=char_level_tokenizer.n_vocab
+print(f"  vocabulary size : {vocab_size} tokens\n")
 
 # Generate splits: train , val
-ratio = 0.9 # 90% for training, 10% for validation
-idx = int(ratio * len(data)) 
+idx = int(train_val_ratio * len(data)) 
 train_data = data[:idx] # train split
 val_data = data[idx:] # validation split
 
@@ -138,6 +153,27 @@ class MultiHeadAttention(nn.Module):
     def forward(self, x):
         out = torch.cat([h(x) for h in self.heads], dim=-1) # Concatenate the outputs of all heads over the channel dimension. Final output shape: (B,T,n_embd)
         return out
+    
+    
+class FeedForward(nn.Module):
+    """
+    Feed-forward neural network with a hidden layer. 
+    A simple linear layer followed by a ReLU activation.
+    Canziani uses a second linear layer, Karpathy does not.
+    """
+    def __init__(self, n_embd):
+        super().__init__()
+        self.linear = nn.Linear(n_embd,    n_embd)
+        #self.linear2 = nn.Linear(n_embd, n_embd)
+        self.activation = nn.ReLU()
+
+    def forward(self, x):
+        out = self.linear(x) # rotation
+        out = self.activation(out) # squash
+        #out = self.linear2(out) # rotation
+        return out
+
+    
 
 class BigramLanguageModel(nn.Module):
     def __init__(self):
@@ -148,9 +184,8 @@ class BigramLanguageModel(nn.Module):
         self.emmbeding_layer = nn.Embedding(vocab_size, n_embd) # Vocab_size = vocabulary size, embedding dimension = n_embd. Embedding layer to convert token indices to embeddings
         self.position_embbedings_layer = nn.Embedding(seq_size, n_embd) # Positional embeddings for each token in the sequence
         # TODO: self-attention, FFN, Residual connections, LayerNorm, etc.
-        num_heads = 4
-        head_size = n_embd // num_heads # head_size is a divisor of n_embd, the embedding dimension
         self.mha = MultiHeadAttention(num_heads, head_size) # Single head of self-attention
+        self.ffn = FeedForward(n_embd) # Feed-forward neural network with a hidden layer
         self.llm_head = nn.Linear(n_embd, vocab_size) # Linear layer to project the embeddings to the vocabulary size
         
     def forward(self, idx, targets=None):
@@ -162,8 +197,10 @@ class BigramLanguageModel(nn.Module):
         token_embeddings = self.emmbeding_layer(idx) # (B,T,n_embd) 
         pos_embeddings = self.position_embbedings_layer(torch.arange(T, device=device)) # (T,n_embd)
         x = token_embeddings + pos_embeddings # (B,T,n_embd) + (T,n_embd) --> (B,T,n_embd)
-        x = self.mha(x) # (B,T,n_embd) # Single head of self-attention
-        logits = self.llm_head(x) # (B,T,n_embd)
+        x = self.mha(x) # (B,T,n_embd) 
+        x = self.ffn(x) # (B,T,n_embd) 
+        logits = self.llm_head(x) # (B,T,vocab_size)
+        
         
         # For inference, no need to calculate loss
         if targets is None:
@@ -171,8 +208,8 @@ class BigramLanguageModel(nn.Module):
         # For training, calculate loss
         else:
             # Reshaping for the loss
-            B,T,n_embd = logits.shape
-            logits = logits.view(B*T,n_embd)
+            B,T,vocab_size = logits.shape
+            logits = logits.view(B*T,vocab_size)
             targets = targets.view(B*T)
             loss = F.cross_entropy(logits, targets)
         
