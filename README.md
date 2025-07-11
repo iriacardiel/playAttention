@@ -27,13 +27,22 @@ Results with:
 - 1 Tranformer block
 - No skip Connections
 - No Normalization 
-- TOTAL TIME: 1min 44s
+- TOTAL TIME: 1min 44s on CPU
 
 ![alt text](image.png)
 
 - 3 Tranformer block
 - No skip Connections
 - No Normalization
-- TOTAL TIME: 3min 41s
+- Some overfitting going on!
+- TOTAL TIME: 3min 41s on CPU
 
 ![alt text](image-1.png)
+
+- 3 Tranformer block
+- skip Connections
+- d_ffn = 4*n_emb
+- No Normalization
+- TOTAL TIME: 4min 05s on CPU
+- Some overfitting going on!
+![alt text](image-2.png)
