@@ -77,23 +77,19 @@ def get_batch(split_type, batch_size, seq_size):
 # MODEL
 # ------
 
-
-# Attention mask by Karpathy
-
-"""
-Every single token at each position t will emmit a query vector and a key vector.
-The query vector: "What am i looking for?"
-The key vector: "What do i have to offer?"
-The value vector: "What is my value?" The value to be aggregated if it is considered relevant by the query.
-Doing dot product (wei) between my query vector and the key vectors of all other tokens will give me a score of how much i like each of them.
-The higher the score, the more i like that token.
-The softmax of the scores will give me a probability distribution over all tokens.
-The weighted sum of the value vectors of all tokens will give me a new representation of the token.
-"""
-
 class Head(nn.Module):
     """
     One head of self-attention.
+    
+    Every single token at each position t will emmit a query vector and a key vector.
+    The query vector: "What am i looking for?"
+    The key vector: "What do i have to offer?"
+    The value vector: "What is my value?" The value to be aggregated if it is considered relevant by the query.
+    Doing dot product (wei) between my query vector and the key vectors of all other tokens will give me a score of how much i like each of them.
+    The higher the score, the more i like that token.
+    The softmax of the scores will give me a probability distribution over all tokens.
+    The weighted sum of the value vectors of all tokens will give me a new representation of the token.
+
     """
     def __init__(self, head_size):
         super().__init__()
@@ -128,6 +124,20 @@ class Head(nn.Module):
         
         return out
 
+class MultiHeadAttention(nn.Module):
+    """
+    Multi-head self-attention.
+    
+    This module allows the model to jointly attend to information from different representation subspaces at different positions.
+    It consists of multiple heads, each performing self-attention independently and then concatenating the results.
+    """
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)]) # List of heads
+        
+    def forward(self, x):
+        out = torch.cat([h(x) for h in self.heads], dim=-1) # Concatenate the outputs of all heads over the channel dimension. Final output shape: (B,T,n_embd)
+        return out
 
 class BigramLanguageModel(nn.Module):
     def __init__(self):
@@ -138,8 +148,9 @@ class BigramLanguageModel(nn.Module):
         self.emmbeding_layer = nn.Embedding(vocab_size, n_embd) # Vocab_size = vocabulary size, embedding dimension = n_embd. Embedding layer to convert token indices to embeddings
         self.position_embbedings_layer = nn.Embedding(seq_size, n_embd) # Positional embeddings for each token in the sequence
         # TODO: self-attention, FFN, Residual connections, LayerNorm, etc.
-        head_size = n_embd 
-        self.sa_head = Head(head_size) # Single head of self-attention
+        num_heads = 4
+        head_size = n_embd // num_heads # head_size is a divisor of n_embd, the embedding dimension
+        self.mha = MultiHeadAttention(num_heads, head_size) # Single head of self-attention
         self.llm_head = nn.Linear(n_embd, vocab_size) # Linear layer to project the embeddings to the vocabulary size
         
     def forward(self, idx, targets=None):
@@ -151,7 +162,7 @@ class BigramLanguageModel(nn.Module):
         token_embeddings = self.emmbeding_layer(idx) # (B,T,n_embd) 
         pos_embeddings = self.position_embbedings_layer(torch.arange(T, device=device)) # (T,n_embd)
         x = token_embeddings + pos_embeddings # (B,T,n_embd) + (T,n_embd) --> (B,T,n_embd)
-        x = self.sa_head(x) # (B,T,n_embd) # Single head of self-attention
+        x = self.mha(x) # (B,T,n_embd) # Single head of self-attention
         logits = self.llm_head(x) # (B,T,n_embd)
         
         # For inference, no need to calculate loss
