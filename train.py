@@ -72,6 +72,58 @@ def get_batch(split_type, batch_size, seq_size):
 
 # MODEL
 # ------
+
+
+# Attention mask by Karpathy
+
+"""
+Every single token at each position t will emmit a query vector and a key vector.
+The query vector: "What am i looking for?"
+The key vector: "What do i have to offer?"
+The value vector: "What is my value?" The value to be aggregated if it is considered relevant by the query.
+Doing dot product (wei) between my query vector and the key vectors of all other tokens will give me a score of how much i like each of them.
+The higher the score, the more i like that token.
+The softmax of the scores will give me a probability distribution over all tokens.
+The weighted sum of the value vectors of all tokens will give me a new representation of the token.
+"""
+
+class Head(nn.Module):
+    """
+    One head of self-attention.
+    """
+    def __init__(self, head_size):
+        super().__init__()
+        self.key = nn.Linear(n_embd, head_size, bias=False) 
+        self.query = nn.Linear(n_embd, head_size, bias=False) 
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+        
+        # This is not a module, it is a buffer that will not be updated during training.
+        self.register_buffer('tril', torch.tril(torch.ones(seq_size, seq_size))) # Lower triangular matrix for causal masking
+        
+    def forward(self, x):
+        
+        B,T,n_embd = x.shape # B: batch size, T: sequence length, C: embedding dimension (n_embd)
+        
+        # let's see a single Head perform self-attention
+
+        k = self.key(x) # (B,T,n_embd)
+        q = self.query(x) # (B,T,n_embd)
+        v = self.value(x) # (B,T,n_embd)
+
+        # Compute attention scores ("affinities") between query and key vectors
+        scores = q @ k.transpose(-2,-1) # (B,T,n_embd) @ (B, n_embd, T) --> (B,T,T) # dot product between query and key vectors
+        scores = scores*n_embd ** -0.5 # Scale the scores by the square root of the embedding dimension to prevent large values that can lead to numerical instability
+        scores = scores.masked_fill(self.tril[:T,:T] == 0, float('-inf'))  # CAUSAL MASKING (only for decoder self-attention, which needs to be autoregressive)
+
+        # Attention scores are normalized to probabilities
+        att = torch.functional.F.softmax(scores, dim=-1) # Normalize the triangular matrix so that every row sums to 1
+        
+        # Perform weighter aggreation of the value vectors based on the attention scores
+        out = att @ v  # (B,T,T) @ (B,T,n_embd) --> (B,T,n_embd) # weighted sum of the value vectors
+        
+        return out
+
+
 class BigramLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
