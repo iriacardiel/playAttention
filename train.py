@@ -27,10 +27,10 @@ learning_rate = 1e-3
 eval_iters = 200 # NUmber of batches to evaluate the loss on train and val splits
 eval_interval = 500 # Number of training steps between evaluations
 train_val_ratio = 0.9 # 90% for training, 10% for validation
-dropout = 0.2 # Dropout rate for regularization (to avoid overfitting)
+dropout = 0 # Dropout rate for regularization (to avoid overfitting)
 # ---------------
-print(f"Hyperparameters")
 
+print(f"Hyperparameters")
 print(f"  seq_size        : {seq_size} tokens")
 print(f"  batch_size      : {batch_size} sequences")
 print(f"  n_embd          : {n_embd}")
@@ -122,22 +122,21 @@ class Head(nn.Module):
 
     def forward(self, x):
         
-        B,T,n_embd = x.shape # B: batch size, T: sequence length, C: embedding dimension (n_embd)
+        B,T,C = x.shape # B: batch size, T: sequence length, C: head size)
         
         # let's see a single Head perform self-attention
-
-        k = self.key(x) # (B,T,n_embd)
-        q = self.query(x) # (B,T,n_embd)
-        v = self.value(x) # (B,T,n_embd)
+        k = self.key(x) # (B,T,C)
+        q = self.query(x) # (B,T,C)
+        v = self.value(x) # (B,T,C)
 
         # Compute attention scores ("affinities") between query and key vectors
-        scores = q @ k.transpose(-2,-1) # (B,T,n_embd) @ (B, n_embd, T) --> (B,T,T) # dot product between query and key vectors
+        scores = q @ k.transpose(-2,-1) # (B,T,C) @ (B, C, T) --> (B,T,T) # dot product between query and key vectors
         scores = scores*n_embd ** -0.5 # Scale the scores by the square root of the embedding dimension to prevent large values that can lead to numerical instability
         scores = scores.masked_fill(self.tril[:T,:T] == 0, float('-inf'))  # CAUSAL MASKING (only for decoder self-attention, which needs to be autoregressive)
         
         # Attention scores are normalized to probabilities
         att = torch.functional.F.softmax(scores, dim=-1) # Normalize the triangular matrix so that every row sums to 1
-        scores = self.dropout(scores) # Apply dropout to the scores for regularization
+        att = self.dropout(att) # Apply dropout to the scores for regularization
 
         # Perform weighter aggreation of the value vectors based on the attention scores
         out = att @ v  # (B,T,T) @ (B,T,n_embd) --> (B,T,n_embd) # weighted sum of the value vectors
@@ -215,9 +214,6 @@ class GPTLanguageModel(nn.Module):
         
         self.emmbeding_layer = nn.Embedding(vocab_size, n_embd) # Vocab_size = vocabulary size, embedding dimension = n_embd. Embedding layer to convert token indices to embeddings
         self.position_embbedings_layer = nn.Embedding(seq_size, n_embd) # Positional embeddings for each token in the sequence
-        # self.transformer_block_1= TransformerBlock(n_embd, num_heads)
-        # self.transformer_block_2= TransformerBlock(n_embd, num_heads)
-        # self.transformer_block_3= TransformerBlock(n_embd, num_heads)
         self.transformer_blocks = nn.Sequential(
             *[TransformerBlock(n_embd, num_heads) for _ in range(N_layers)] # N_layers is the number of transformer blocks
         )
@@ -355,8 +351,7 @@ for step in trange(training_steps, desc="Training steps", unit="step", disable=F
         train_line.set_data(steps_recorded, train_losses)
         val_line.set_data(steps_recorded, val_losses)
         ax.set_ylim(min(min(train_losses), min(val_losses))*0.9, max(max(train_losses), max(val_losses)) * 1.1 if train_losses else 1)
-        plt.draw()
-        plt.pause(0.001)  
+        fig.canvas.draw()
         plt.savefig('plots/loss_curves_live.png', dpi=300, bbox_inches='tight')
 
     # GET BATCH
@@ -372,7 +367,7 @@ for step in trange(training_steps, desc="Training steps", unit="step", disable=F
 print(f"Final loss : {loss.item()}") 
 
 # Turn off Plot
-plt.close()
+plt.close(fig)
 
 
 
