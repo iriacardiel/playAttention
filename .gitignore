@@ -6,7 +6,5 @@ __pycache__/
 *.pyd
 *.pkl
 *.db
-*.png
-*.jpg
-*.jpeg
-*.csv
+plots/*.png
+plots/*.csv
