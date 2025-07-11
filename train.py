@@ -1,316 +1,566 @@
-from termcolor import colored
-from tokenization.tokenizers import tiktoken_tokenizer, char_level_tokenizer
+"""
+GPT-style Transformer Training Script
+=====================================
+
+This script implements a small GPT-style transformer from scratch for educational purposes.
+It includes detailed comments explaining each component and process.
+
+Architecture:
+- Character-level tokenization
+- Multi-head self-attention
+- Feed-forward networks
+- Positional embeddings
+- Residual connections and layer normalization
+"""
+import os
+import csv
+import pathlib as Path
+from typing import Tuple, Dict, Optional, Any
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from tqdm import trange
 import matplotlib.pyplot as plt
-import os
-import csv
+from termcolor import colored
+
+from tokenization.tokenizers import tiktoken_tokenizer, char_level_tokenizer
+
+# =============================================================================
+# CONFIGURATION & SETUP
+# =============================================================================
 
 # For reproducibility
 torch.manual_seed(1337) 
 
-# Use computation available
+# Determine computation device (GPU or CPU)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
 print(f"Training compute device --> {device}\n")
 
+# =============================================================================
 # HYPERPARAMETERS
-# ---------------
+# =============================================================================
+
+# Model Architecture Parameters
 seq_size = 8 # Number of tokens in the input sequence. Maximum context length for the predictions
 batch_size = 32 # Number of sequences in a batch to be processed in parallel
 n_embd = 32 # Embedding dimension: size of the embedding vector for each token
 num_heads = 4
 N_layers = 3 # Number of transformer blocks in the model
+dropout = 0 # Dropout rate for regularization (to avoid overfitting)
+
+# Training Parameters
 training_steps = 20000 # Number of training steps
 learning_rate = 1e-3 
 eval_iters = 200 # NUmber of batches to evaluate the loss on train and val splits
 eval_interval = 500 # Number of training steps between evaluations
 train_val_ratio = 0.9 # 90% for training, 10% for validation
-dropout = 0 # Dropout rate for regularization (to avoid overfitting)
-# ---------------
 
-print(f"Hyperparameters")
-print(f"  seq_size        : {seq_size} tokens")
+# File paths
+DATA_PATH = 'data/tinyshakespeare.txt'
+PLOTS_DIR = 'plots'
+CSV_FILE = 'plots/training_losses.csv'
+PLOT_FILE = 'plots/loss_curves_live.png'
+
+print(f"\n{'='*60}")
+print("HYPERPARAMETERS")
+print('='*60)
+print(f"Model Architecture:")
+print(f"  seq_size        : {seq_size} tokens (max context length)")
 print(f"  batch_size      : {batch_size} sequences")
-print(f"  n_embd          : {n_embd}")
+print(f"  n_embd          : {n_embd} (embedding dimension)")
 print(f"  num_heads       : {num_heads} heads")
-print(f"  N_layers        : {N_layers} transformer layers")
-print(f"  training_steps  : {training_steps} steps")
-print(f"  learning_rate   : {learning_rate}")
-print(f"  eval_iters      : {eval_iters} steps")
-print(f"  eval_interval   : {eval_interval} steps")
+print(f"  N_layers        : {N_layers} transformer blocks")
 print(f"  dropout         : {dropout}")
+print(f"\nTraining Parameters:")
+print(f"  training_steps  : {training_steps:,} steps")
+print(f"  learning_rate   : {learning_rate}")
+print(f"  eval_iters      : {eval_iters} batches")
+print(f"  eval_interval   : {eval_interval} steps")
+print(f"  train_val_ratio : {train_val_ratio}")
 
 
-# PREPARE TRAINING AND VALIDATION DATA
-# ------------------------------------
-# Load train text file
-with open('data/tinyshakespeare.txt', 'r') as f:
-    text = f.read()
+# =============================================================================
+# DATA PREPARATION
+# =============================================================================
+print(f"\n{'='*60}")
+print("DATA PREPARATION")
+print('='*60)
+
+def load_and_prepare_data():
+    """
+    Load text data, tokenize it, and split into train/validation sets.
     
-text_ids = char_level_tokenizer.encode(text)
-data = torch.tensor(text_ids, dtype=torch.long)
-vocab_size=char_level_tokenizer.n_vocab
-print(f"  vocabulary size : {vocab_size} tokens\n")
+    Returns:
+        train_data: Training data tensor
+        val_data: Validation data tensor
+        vocab_size: Size of vocabulary
+    """
+    # Load text file
+    try:
+        with open(DATA_PATH, 'r', encoding='utf-8') as f:
+            text = f.read()
+        print(f"✓ Loaded text file: {len(text):,} characters")
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Data file not found: {DATA_PATH}")
+    
+    # Tokenize text using character-level tokenizer [TODO: Try tiktoken tokenizer]
+    text_ids = char_level_tokenizer.encode(text)
+    data = torch.tensor(text_ids, dtype=torch.long)
+    vocab_size = char_level_tokenizer.n_vocab
+    print(f"✓ Tokenized text: {len(data):,} tokens")
+    print(f"✓ Vocabulary size: {vocab_size} unique tokens")
 
-# Generate splits: train , val
-idx = int(train_val_ratio * len(data)) 
-train_data = data[:idx] # train split
-val_data = data[idx:] # validation split
+    # Generate splits: train , val
+    split_idx = int(train_val_ratio * len(data)) 
+    train_data = data[:split_idx] # train split
+    val_data = data[split_idx:] # validation split
+    
+    print(f"✓ Data split:")
+    print(f"  Training:   {len(train_data):,} tokens ({len(train_data)/len(data)*100:.1f}%)")
+    print(f"  Validation: {len(val_data):,} tokens ({len(val_data)/len(data)*100:.1f}%)")
+    
+    return train_data, val_data, vocab_size
+
+# Load and prepare data
+train_data, val_data, vocab_size = load_and_prepare_data()
+
 
 # Batch generator
-def get_batch(split_type, batch_size, seq_size):
+def get_batch(split_type: str, batch_size: int, seq_size: int)-> Tuple[torch.Tensor, torch.Tensor]:
     """
-    The transformer receives batches of sequences of the train data
-    1 batch contains batch_size sequences of seq_size tokens
-    This can be sampled to seq_size+1 examples on how to predict the next token: input(x) and target(y) pairs.
-
-    seq_size =  5 # Size of the input sequence. Maximum context length for the predictions
-    batch_size = 4 # Number of sequences in a batch to be processed in parallel. In this case, 4 sequences of 5 tokens each
-
-    1 batch contains 4 sequences of 5 tokens. 
-    This can be sampled to 5+1 examples on how to predict the next token: input x and target y pairs.
-    
-        sequence = [[23,30,31,7,21]]]
+    Generate a batch of input-target pairs for training.
         
-            input x = [[23]], target y = [[30]]
-            input x = [[23,30]], target y = [[31]]
-            input x = [[23,30,31]], target y = [[7]]
-            input x = [[23,30,31, 7]], target y = [[21]]
-            input x = [[23,30,31, 7, 21]], target y = [[14]]
-
-
-    In a batch:
-        x batch = [[23,30,31,7,21,14,0,1], [...], [...], [...]]
-        y batch = [[30,31,7,21,14,0,1,2], [...], [...], [...]]
+        How batching works:
+        - Sample random starting positions in the dataset
+        - Extract sequences of length seq_size starting from those positions
+        - Create targets by shifting input sequences by one position
+        
+        Example with seq_size=5, batch_size=2:
+            Input:  [[23, 30, 31, 7, 21], [45, 12, 8, 33, 9]]
+            Target: [[30, 31, 7, 21, 14], [12, 8, 33, 9, 41]]
+        
+        This gives us seq_size training examples per sequence:
+            - Predict 30 given [23]
+            - Predict 31 given [23, 30]
+            - Predict 7 given [23, 30, 31]
+            - etc.
     """
     data = train_data if split_type == "train" else val_data
-    starting_idx = torch.randint(len(data) - seq_size, (batch_size,)) # Randomly select STARTING indices for each sequence in the batch
-    xb = torch.stack([data[i:i+seq_size] for i in starting_idx]) # Extract sequences of seq_size tokens starting from the indices
-    yb = torch.stack([data[i+1:i+seq_size+1] for i in starting_idx]) # Shift the sequence by one to the right to create the target
-    xb, yb = xb.to(device), yb.to(device) # Move to device (GPU or CPU)
+    
+    # Sample random starting indices for each sequence in the batch
+    starting_idx = torch.randint(
+        len(data) - seq_size,
+        (batch_size,)
+    ) 
+    
+    # Extract sequences and create targets
+    xb = torch.stack([
+        data[i:i+seq_size] 
+        for i in starting_idx
+    ]) 
+    # Shift the sequence by one to the right to create the target
+    yb = torch.stack([
+        data[i+1:i+seq_size+1] 
+        for i in starting_idx
+    ]) 
+    
+    # Move to compute device (GPU or CPU)
+    xb, yb = xb.to(device), yb.to(device) 
+    
     return xb, yb
 
-# MODEL
-# ------
+# =============================================================================
+# MODEL ARCHITECTURE
+# =============================================================================
 
-class Head(nn.Module):
+class AttentionHead(nn.Module):
     """
-    One head of self-attention.
+    Single head of self-attention.
     
-    Every single token at each position t will emmit a query vector and a key vector.
-    The query vector: "What am i looking for?"
-    The key vector: "What do i have to offer?"
-    The value vector: "What is my value?" The value to be aggregated if it is considered relevant by the query.
-    Doing dot product (wei) between my query vector and the key vectors of all other tokens will give me a score of how much i like each of them.
-    The higher the score, the more i like that token.
-    The softmax of the scores will give me a probability distribution over all tokens.
-    The weighted sum of the value vectors of all tokens will give me a new representation of the token.
-
+    Self-attention allows each token to "look at" all other tokens in the sequence
+    and decide how much to focus on each one when creating its representation.
+    
+    Key concepts:
+    - Query (Q): "What am I looking for?"
+    - Key (K): "What do I contain?"
+    - Value (V): "What should I contribute if I'm relevant?"
+    
+    The attention mechanism:
+    1. Compute attention scores: Q @ K^T (how much each token "likes" every other token)
+    2. Apply causal masking (prevent looking at future tokens)
+    3. Normalize with softmax to get attention weights
+    4. Apply weights to values: attention_weights @ V
+    
     """
-    def __init__(self, head_size):
+    def __init__(self, head_size: int):
         super().__init__()
-        # head_size is a divisor of n_embd, the embedding dimension
+        
+        # Linear transformations for Q, K, V (no bias needed)
         self.key = nn.Linear(n_embd, head_size, bias=False) 
         self.query = nn.Linear(n_embd, head_size, bias=False) 
         self.value = nn.Linear(n_embd, head_size, bias=False)
         
-        # This is not a module, it is a buffer that will not be updated during training.
-        self.register_buffer('tril', torch.tril(torch.ones(seq_size, seq_size))) # Lower triangular matrix for causal masking
-        self.dropout = nn.Dropout(dropout) # Dropout layer for regularization 
+        # Causal mask: lower triangular matrix prevents looking at future tokens
+        self.register_buffer('causal_mask', torch.tril(torch.ones(seq_size, seq_size)))
+        
+        # Dropout layer for regularization 
+        self.dropout = nn.Dropout(dropout) 
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         
-        B,T,C = x.shape # B: batch size, T: sequence length, C: head size)
+        B,T,C = x.shape # B: batch size, T: sequence length, C: head size
         
-        # let's see a single Head perform self-attention
+        # Compute Q, K, V projections
         k = self.key(x) # (B,T,C)
         q = self.query(x) # (B,T,C)
         v = self.value(x) # (B,T,C)
 
         # Compute attention scores ("affinities") between query and key vectors
         scores = q @ k.transpose(-2,-1) # (B,T,C) @ (B, C, T) --> (B,T,T) # dot product between query and key vectors
-        scores = scores*n_embd ** -0.5 # Scale the scores by the square root of the embedding dimension to prevent large values that can lead to numerical instability
-        scores = scores.masked_fill(self.tril[:T,:T] == 0, float('-inf'))  # CAUSAL MASKING (only for decoder self-attention, which needs to be autoregressive)
+        
+        # Scale by sqrt(head_size) to prevent large values that cause vanishing gradients
+        scores = scores * C ** -0.5 # Scale the scores by the square root of the embedding dimension to prevent large values that can lead to numerical instability
+        
+        # Apply causal masking (set future positions to -inf). only for decoder self-attention, which needs to be autoregressive
+        scores = scores.masked_fill(
+            self.causal_mask[:T,:T] == 0, 
+            float('-inf')
+        )
         
         # Attention scores are normalized to probabilities
-        att = torch.functional.F.softmax(scores, dim=-1) # Normalize the triangular matrix so that every row sums to 1
-        att = self.dropout(att) # Apply dropout to the scores for regularization
+        attention_weights = torch.functional.F.softmax(scores, dim=-1)
+        
+        # Dropout for regularization
+        attention_weights = self.dropout(attention_weights)
 
-        # Perform weighter aggreation of the value vectors based on the attention scores
-        out = att @ v  # (B,T,T) @ (B,T,n_embd) --> (B,T,n_embd) # weighted sum of the value vectors
+        # Apply attention to values: weighted sum of the value vectors
+        out = attention_weights @ v  # (B,T,T) @ (B,T,C) --> (B,T,C)
         
         return out
 
 class MultiHeadAttention(nn.Module):
     """
-    Multi-head self-attention.
+    Multi-head self-attention module.
     
-    This module allows the model to jointly attend to information from different representation subspaces at different positions.
-    It consists of multiple heads, each performing self-attention independently and then concatenating the results.
+    Why Multiple Heads?
+    ==================
+    
+    Multiple attention heads allow the model to attend to different aspects
+    of the input simultaneously. Each head can focus on different relationships:
+    
+    - Head 1: Might focus on syntactic relationships (subject-verb)
+    - Head 2: Might focus on semantic relationships (word meanings)
+    - Head 3: Might focus on positional relationships (nearby words)
+    - Head 4: Might focus on long-range dependencies
+    
+    The outputs of all heads are concatenated and projected back to the
+    original embedding dimension, allowing the model to use all these
+    different types of attention simultaneously.
     """
-    def __init__(self, num_heads, head_size):
+    
+    def __init__(self, num_heads: int, head_size: int):
         super().__init__()
-        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)]) # List of heads
-        self.proj = nn.Linear(n_embd, n_embd) # Linear layer to project the concatenated outputs of all heads back to the embedding dimension
-        self.dropout = nn.Dropout(dropout) # Dropout layer for regularization (not used in the original GPT, but can be useful for stability)
+        # Multiple attention heads operating in parallel
+        self.heads = nn.ModuleList([
+            AttentionHead(head_size)
+            for _ in range(num_heads)
+        ])
+        # Project concatenated heads back to embedding dimension
+        self.proj = nn.Linear(n_embd, n_embd)
+        
+        # Dropout layer for regularization
+        self.dropout = nn.Dropout(dropout) 
 
-    def forward(self, x):
-        out = torch.cat([h(x) for h in self.heads], dim=-1) # Concatenate the outputs of all heads over the channel dimension. Final output shape: (B,T,n_embd)
-        out = self.proj(out) # Project the concatenated outputs back to the embedding dimension
-        out = self.dropout(out) # Apply dropout for regularization
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Run all heads in parallel and concatenate outputs
+        head_outputs = [h(x) for h in self.heads] # List of outputs from each head, each of shape (B,T,C)
+        out = torch.cat(head_outputs, dim=-1) # (B, T, n_embd)
+        
+        # Project back to embedding dimension
+        out = self.proj(out) 
+        
+        # Apply dropout for regularization
+        out = self.dropout(out) 
+        
         return out
     
     
 class FeedForward(nn.Module):
     """
-    Feed-forward neural network with a hidden layer. 
-    A simple linear layer followed by a ReLU activation.
+    Position-wise feed-forward network.
+    
+    Purpose:
+    ========
+    
+    After attention has gathered information from different positions,
+    the feed-forward network processes this information for each position
+    independently. It's a simple MLP that:
+    
+    1. Expands the representation to a larger dimension (4x is standard)
+    2. Applies non-linear activation (ReLU)
+    3. Projects back to the original dimension
+    
+    This allows the model to perform complex computations on the attention
+    output and introduces non-linearity that's crucial for learning
+    complex patterns.
+    
+    Architecture: Linear -> ReLU -> Linear -> Dropout
     """
-    def __init__(self, n_embd):
+    def __init__(self, n_embd: int):
         super().__init__()
-        d_ffn = 4 * n_embd # Hidden layer size, typically larger than the embedding dimension
-        self.linear1 = nn.Linear(n_embd,d_ffn)
-        self.activation = nn.ReLU()
-        self.linear2 = nn.Linear(d_ffn, n_embd)
-        self.dropout = nn.Dropout(dropout) # Dropout layer for regularization (not used in the original GPT, but can be useful for stability)
+        # Standard transformer uses 4x expansion
+        hidden_size = 4 * n_embd 
+        
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, hidden_size),  # Linear layer to expand to larger dimension
+            nn.ReLU(),  # Activation function (ReLU)
+            nn.Linear(hidden_size, n_embd),  # Linear layer to project back to embedding dimension
+            nn.Dropout(dropout) # Dropout for regularization
+        )
 
-    def forward(self, x):
-        x = self.linear1(x) # rotation
-        x = self.activation(x) # squash
-        x = self.linear2(x) # rotation
-        x = self.dropout(x) # apply dropout
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.net(x)
         return x
 
 class TransformerBlock(nn.Module):
     """
-    Transformer block with self-attention and feed-forward neural network.
+    Complete transformer block: Multi-head attention + Feed-forward.
     
-    This block consists of a multi-head self-attention layer followed by a feed-forward neural network.
-    It also includes residual connections and layer normalization.
+    Architecture (Pre-LayerNorm style):
+    ===================================
+    
+    1. LayerNorm -> Multi-Head Attention -> Residual Connection
+    2. LayerNorm -> Feed-Forward Network -> Residual Connection
+    
+    Key Components:
+    - Pre-LayerNorm: Normalizes inputs before each sub-layer (more stable training)
+    - Residual Connections: Allow gradients to flow directly, enabling deep networks
+    - Multi-Head Attention: Allows tokens to communicate with each other
+    - Feed-Forward: Processes the attended information
+    
+    Why Pre-LayerNorm?
+    - Original transformers used Post-LayerNorm (after residual connection)
+    - Pre-LayerNorm has been shown to be more stable and easier to train
+    - It helps with gradient flow in deep networks
     """
-    def __init__(self, n_embd, num_heads):
+    def __init__(self, n_embd: int, num_heads: int):
         super().__init__()
         head_size = n_embd // num_heads # head_size is a divisor of n_embd, the embedding dimension
-        self.mha = MultiHeadAttention(num_heads, head_size) # Multi-head self-attention
-        self.ffn = FeedForward(n_embd) # Feed-forward neural network
-        self.layernorm1 = nn.LayerNorm(n_embd) # Layer normalization (we will do PRE-NORM before the self-attention)
-        self.layernorm2 = nn.LayerNorm(n_embd) # Layer normalization (we will do PRE-NORM before the feed-forward network)
+        
+        # Sub-layers of the transformer block
+        self.ln1 = nn.LayerNorm(n_embd)                      # Pre-norm for attention
+        self.mha = MultiHeadAttention(num_heads, head_size)  # Multi-head attention
+        self.ln2 = nn.LayerNorm(n_embd)                      # Pre-norm for feed-forward
+        self.ffn = FeedForward(n_embd)                       # Feed-forward network
 
-    def forward(self, x):
-        x = self.layernorm1(x)
-        x = x + self.mha(x) # Residual connection + LayerNorm after self-attention
-        x = self.layernorm2(x)
-        x = x + self.ffn(x) # Residual connection + LayerNorm after feed-forward network
+    def forward(self,  x: torch.Tensor) -> torch.Tensor:
+        # Self-attention with residual connection
+        x = self.ln1(x)
+        x = x + self.mha(x) 
+        
+        # Feed-forward with residual connection
+        x = self.ln2(x)
+        x = x + self.ffn(x) 
         return x
     
 
 class GPTLanguageModel(nn.Module):
+    """
+    GPT-style Language Model.
+    
+    Architecture Overview:
+    =====================
+    
+    1. Token Embedding: Converts token IDs to dense vectors
+    2. Positional Embedding: Adds position information to each token
+    3. Transformer Blocks: Stack of attention + feed-forward layers
+    4. Layer Normalization: Final normalization before output
+    5. Language Modeling Head: Projects to vocabulary size for next-token prediction
+    
+    Key Concepts:
+    - Autoregressive: Predicts next token based on previous tokens
+    - Causal: Cannot look at future tokens during training
+    - Transformer: Uses attention mechanism for token interactions
+    """
     def __init__(self):
         super().__init__()
-        # Each token reads off the logits for the next token from a lookup table
-        # Randomly initialized embedding layer of size (vocab_size, vocab_size)
+        # Embedding layers
+        self.emmbeding_layer = nn.Embedding(vocab_size, n_embd)         # Token ID -> embedding vector
+        self.position_embbedings_layer = nn.Embedding(seq_size, n_embd) # Position -> embedding vector
+       
+        # Stack of N_layers transformer blocks
+        self.transformer_blocks = nn.Sequential(*[
+            TransformerBlock(n_embd, num_heads) 
+            for _ in range(N_layers)
+        ])
         
-        self.emmbeding_layer = nn.Embedding(vocab_size, n_embd) # Vocab_size = vocabulary size, embedding dimension = n_embd. Embedding layer to convert token indices to embeddings
-        self.position_embbedings_layer = nn.Embedding(seq_size, n_embd) # Positional embeddings for each token in the sequence
-        self.transformer_blocks = nn.Sequential(
-            *[TransformerBlock(n_embd, num_heads) for _ in range(N_layers)] # N_layers is the number of transformer blocks
-        )
-        self.layernorm = nn.LayerNorm(n_embd) # Layer normalization for the final output (not used in the original GPT, but can be useful for stability)
-        self.llm_head = nn.Linear(n_embd, vocab_size) # Linear layer to project the embeddings to the vocabulary size
+        self.ln = nn.LayerNorm(n_embd)                                  # Final normalization 
         
-    def forward(self, idx, targets=None):
+        self.llm_head = nn.Linear(n_embd, vocab_size)                   # Project to vocabulary 
+        
+    def forward(self, idx: torch.Tensor, targets: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Forward pass through the model.
+        
+        Args:
+            idx: Input token indices, shape (batch_size, sequence_length)
+            targets: Target token indices for loss calculation, shape (batch_size, sequence_length)
+        
+        Returns:
+            logits: Predicted token probabilities, shape (batch_size, sequence_length, vocab_size)
+            loss: Cross-entropy loss if targets provided, None otherwise
+        """
+        
         B,T = idx.shape # B: batch size, T: sequence length
-        # idx (xb) input tokens shape: (B,T), target tokens (yb) shape: (B,T)
-        # B: batch size, T: sequence length
-        # Access the embedding table to get the logits for the next token is equivalent to multiplying the one-hot encoded vector of the input token with the embedding matrix
         
-        token_embeddings = self.emmbeding_layer(idx) # (B,T,n_embd) 
-        pos_embeddings = self.position_embbedings_layer(torch.arange(T, device=device)) # (T,n_embd)
-        x = token_embeddings + pos_embeddings # (B,T,n_embd) + (T,n_embd) --> (B,T,n_embd)
-        x = self.transformer_blocks(x) # (B,T,n_embd) # Pass through the transformer blocks
-        x = self.layernorm(x) # (B,T,n_embd) Layer normalization for the final output 
+        # Create embeddings for the input tokens and add positional embeddings
+        token_emb = self.emmbeding_layer(idx) # (B, T, n_embd) 
+        pos_emb = self.position_embbedings_layer(torch.arange(T, device=device)) # (T, n_embd)
+        x = token_emb + pos_emb # (B, T, n_embd)
+        
+        # Pass through the transformer blocks
+        x = self.transformer_blocks(x) # (B, T, n_embd)
+        
+        # Final layer normalization
+        x = self.ln(x) # (B,T,n_embd) Layer normalization for the final output 
+        
+        # Linear layer to project the embeddings to the vocabulary size
         logits = self.llm_head(x) # (B,T,vocab_size)
         
-        
+        # Calculate loss if targets provided (for training)
+        loss = None
         # For inference, no need to calculate loss
-        if targets is None:
-            loss = None
-        # For training, calculate loss
-        else:
+        if targets is not None:
             # Reshaping for the loss
-            B,T,vocab_size = logits.shape
-            logits = logits.view(B*T,vocab_size)
-            targets = targets.view(B*T)
-            loss = F.cross_entropy(logits, targets)
+            B, T, C = logits.shape
+            logits_flat = logits.view(B * T, C)
+            targets_flat = targets.view(B * T)
+            loss = F.cross_entropy(logits_flat, targets_flat)
         
         return logits, loss
     
-    def generate(self, idx, max_new_tokens):
-        """_summary_
-        Generates the next token in the sequence in all the batch dimensions in the time dimension :
-        (BxT) --> BxT+1, BxT+2, BxT+3, ...., BxT+max_new_tokens
+    def generate(self, idx: torch.Tensor, max_new_tokens: int) -> torch.Tensor:
         """
-
+        Generate new tokens autoregressively in all the batch dimensions
+        (BxT) --> BxT+1, BxT+2, BxT+3, ...., BxT+max_new_tokens
+        
+        Process:
+        1. Take current sequence
+        2. Get predictions for next token
+        3. Sample from the probability distribution
+        4. Append to sequence
+        5. Repeat
+        
+        Note: We crop the input to seq_size to respect the model's context window.
+        
+        Args:
+            idx: Starting context, shape (batch_size, current_length)
+            max_new_tokens: Number of tokens to generate
+        
+        Returns:
+            Generated sequence, shape (batch_size, current_length + max_new_tokens)
+        """
         for _ in range(max_new_tokens):
-            idx_clip = idx[:,-seq_size:] # (B, T) clip the input sequence to the last seq_size tokens to avoid exceeding the maximum context length
+            # Crop input sequence to maximum context length
+            idx_cropped = idx[:, -seq_size:] # (B, T) 
             
-            # get the predictions
-            logits, _ = self(idx_clip) # (B, T, C) # para cada batch B, los logits de cada time step 1,..., T para los C elementos del vocabulario
+            # Get predictions
+            logits, _ = self(idx_cropped) # (B, T, vocab_size)
             
-            # focus on the last step (the predicted) 
-            logits = logits[:,-1,:] # (B, C) 
+            # Focus on the last time step (next token prediction)
+            logits = logits[:, -1, :] # (B, vocab_size) 
 
-            # apply softmax to get probabiliites
-            probs = F.softmax(logits, dim = 1) # (B,C) para cada batch B, la distribución de probabilidad sobre los C elementos del vocabulario para el siguiente time step
+            # Convert to probabilities
+            probs = F.softmax(logits, dim = 1) # (B, vocab_size)
 
-            # sample from the distribution
-            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1) para cada batch B, el idx sampleado para el siguiente time step
+            # Sample next token
+            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
             
-            # append sampled index to the runnin sequence
-            idx = torch.cat((idx, idx_next), dim = 1) # (B, T+1) concatenación del next token con el resto de la secuencia
+            # Append to sequence
+            idx = torch.cat((idx, idx_next), dim = 1) # (B, T+1)
             
         return idx
 
-# Model instance
-m = GPTLanguageModel()
-model = m.to(device)
+# =============================================================================
+# MODEL INITIALIZATION
+# =============================================================================
+print(f"\n{'='*60}")
+print("MODEL INITIALIZATION")
+print('='*60)
+# Create model instance
+model = GPTLanguageModel().to(device)
 
-# OPTIMIZER
-# ---------
-# PyTorch optimizer: takes the gradients and updates paramenters
+# Count model parameters
+total_params = sum(p.numel() for p in model.parameters())
+trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+print(f"✓ Model initialized:")
+print(f"  Total parameters: {total_params:,}")
+print(f"  Trainable parameters: {trainable_params:,}")
+print(f"  Model size: ~{total_params * 4 / 1024**2:.2f} MB (float32)")
+
+# Initialize optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr = learning_rate) 
+print(f"✓ Optimizer: AdamW with learning rate {learning_rate}")
 
 
-# TRAINING LOOP
-# -------------
 
-# Initialize lists to store losses for plotting and logging
-train_losses = []
-val_losses = []
-steps_recorded = []
+# =============================================================================
+# TRAINING UTILITIES
+# =============================================================================
 
-# Initialize Plot
-fig, ax = plt.subplots(figsize=(10, 6))
-ax.set_xlabel('Steps')
-ax.set_ylabel('Loss')
-ax.set_title('Training and Validation Loss')
-ax.grid(True, alpha=0.3)
-ax.set_xlim(0, training_steps + 2*eval_interval)
-ax.set_xticks(range(0, training_steps + 2*eval_interval, 2*eval_interval)) # Set x-ticks to show every 2 eval_interval steps
-ax.tick_params(axis='x', labelsize=6)  # x-axis ticks
-train_line, = ax.plot([], [], color = "tab:blue", label='Training Loss', linewidth=2)
-val_line, = ax.plot([], [],  color = "tab:orange", label='Validation Loss', linewidth=2)
-ax.legend()
-os.makedirs('plots', exist_ok=True)
-
-# Initialize CSV
-csv_file_path = 'plots/training_losses.csv'
-with open(csv_file_path, 'w', newline='') as csvfile:
-    writer = csv.writer(csvfile)
-    writer.writerow(['Step', 'Train_Loss', 'Val_Loss'])  # Header row
+def set_up_visualization():
+    """
+    Set up the live visualization for training and validation losses.
+    """
+    # Create plots directory
+    os.makedirs(PLOTS_DIR, exist_ok=True)
     
+    # Initialize Plot
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.set_xlabel('Steps')
+    ax.set_ylabel('Loss')
+    ax.set_title('Training and Validation Loss')
+    ax.grid(True, alpha=0.3)
+    ax.set_xlim(0, training_steps + 2 * eval_interval)
+    ax.set_xticks(range(0, training_steps + 2 * eval_interval, 2 * eval_interval)) # Set x-ticks to show every 2 eval_interval steps
+    ax.tick_params(axis='x', labelsize=6)  # x-axis ticks
+    train_line, = ax.plot([], [], color = "tab:blue", label='Training Loss', linewidth=2)
+    val_line, = ax.plot([], [],  color = "tab:orange", label='Validation Loss', linewidth=2)
+    ax.legend(loc='upper right')
+
+    # Initialize CSV
+    with open(CSV_FILE, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['Step', 'Train_Loss', 'Val_Loss'])  # Header row
+        
+    return fig, ax, train_line, val_line
+   
+def update_visualization(step: int, train_loss: float, val_loss: float, 
+                        train_losses: list, val_losses: list, steps_recorded: list,
+                        fig: plt.Figure, ax: plt.Axes, train_line: Any, val_line: Any): 
+    """Update training visualization and save progress."""
+    # Update data lists
+    train_losses.append(train_loss)
+    val_losses.append(val_loss)
+    steps_recorded.append(step)
+
+    # Update CSV
+    with open(CSV_FILE, 'a', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow([step, losses['train'].item(), losses['val'].item()])
+    
+    # Update Plot
+    train_line.set_data(steps_recorded, train_losses)
+    val_line.set_data(steps_recorded, val_losses)
+    ax.set_ylim(min(min(train_losses), min(val_losses))*0.9, max(max(train_losses), max(val_losses)) * 1.1 if train_losses else 1)
+    
+    # Save plot
+    fig.canvas.draw()
+    plt.savefig(PLOT_FILE, dpi=300, bbox_inches='tight')
+    
+
 @torch.no_grad()
 def estimate_loss():
     """
@@ -328,50 +578,70 @@ def estimate_loss():
     model.train() # indicate the model is in 'training' mode
     return mean_losses
 
+
+# =============================================================================
+# TRAINING LOOP
+# =============================================================================
+print(f"\n{'='*60}")
+print("TRAINING")
+print('='*60)
+
+# Initialize lists to store losses for plotting and logging
+train_losses, val_losses, steps_recorded = [], [], []
+# Initialize visualization plot
+fig, ax, train_line, val_line = set_up_visualization()
+
+print(f"Training configuration:")
+print(f"  Steps: {training_steps:,}")
+print(f"  Batch size: {batch_size}")
+print(f"  Evaluation every {eval_interval} steps")
+print(f"  Logging to: {CSV_FILE}")
+print(f"  Plots saved to: {PLOT_FILE}")
+print(f"\nStarting training loop...")
+
 # In each time step a different batch is sampled randomly with 32 sequences of 8 tokens
 for step in trange(training_steps, desc="Training steps", unit="step", disable=False):
     
-    # LOG TRAINING PROGRESS
+    # EVALUATION PHASE
     if step % eval_interval == 0: # Every eval_interval steps pause training and evaluate the mean loss on train and val sets on eval_iters batches
 
-        mean_losses = estimate_loss()
-        #print(f"Step {step}: train loss {mean_losses['train']:.4f}, val loss {mean_losses['val']:.4f}")
+        losses = estimate_loss()
         
-        # Store losses for plotting and logging
-        train_losses.append(mean_losses['train'].item())
-        val_losses.append(mean_losses['val'].item())
-        steps_recorded.append(step)
+        # Update visualization
+        update_visualization(
+            step, losses['train'], losses['val'],
+            train_losses, val_losses, steps_recorded,
+            fig, ax, train_line, val_line
+        )
     
-        # Update CSV
-        with open(csv_file_path, 'a', newline='') as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow([step, mean_losses['train'].item(), mean_losses['val'].item()])
-        
-        # Update Plot
-        train_line.set_data(steps_recorded, train_losses)
-        val_line.set_data(steps_recorded, val_losses)
-        ax.set_ylim(min(min(train_losses), min(val_losses))*0.9, max(max(train_losses), max(val_losses)) * 1.1 if train_losses else 1)
-        fig.canvas.draw()
-        plt.savefig('plots/loss_curves_live.png', dpi=300, bbox_inches='tight')
+    # TRAINING PHASE
 
-    # GET BATCH
+    # Get a batch of training data
     xb, yb = get_batch(split_type='train', batch_size=batch_size, seq_size=seq_size) # Sample a batch of data (this is a random batch from the train data)
-    # FORWARD PASS
+    
+    # Forward pass: compute model output and loss
     _, loss = model(xb, yb) # Forward pass
-    # BACKWARD PASS
-    optimizer.zero_grad(set_to_none=True) # Clear gradients
-    loss.backward() # Backward pass: PyTorch automatically computes gradients of the loss with respect to all model parameters, using autograd
-    # UPDATE WEIGHTS
+    
+    # Backward pass: compute gradients
+    optimizer.zero_grad(set_to_none=True) # Clear previous gradients
+    loss.backward() # Compute gradients via backpropagation
+    
+    # Update model parameters
     optimizer.step() # Update model weights
 
-print(f"Final loss : {loss.item()}") 
+# Final evaluation
+final_losses = estimate_loss()
+print(f"\nTraining completed!")
+print(f"Final train loss: {final_losses['train']:.4f}")
+print(f"Final validation loss: {final_losses['val']:.4f}")
 
 # Turn off Plot
 plt.close(fig)
 
 
 
-# INFERENCE
-# ---------
+# =============================================================================
+# INFERENCE & TEXT GENERATION
+# =============================================================================
 context = torch.zeros((1,1), dtype = torch.long, device=device)
 print("Generated text: <START>", colored(char_level_tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist()), "cyan"), "<END>")
