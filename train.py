@@ -3,6 +3,10 @@ from tokenization.tokenizers import tiktoken_tokenizer, char_level_tokenizer
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from tqdm import trange
+import matplotlib.pyplot as plt
+import os
+import csv
 
 # For reproducibility
 torch.manual_seed(1337) 
@@ -14,7 +18,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # ---------------
 seq_size = 8 # Number of tokens in the input sequence. Maximum context length for the predictions
 batch_size = 32 # Number of sequences in a batch to be processed in parallel
-training_steps = 10000
+training_steps = 20000 # Number of training steps
 learning_rate = 1e-3 
 eval_iters = 200 # NUmber of batches to evaluate the loss on train and val splits
 eval_interval = 500 # Number of training steps between evaluations
@@ -201,6 +205,32 @@ optimizer = torch.optim.AdamW(model.parameters(), lr = learning_rate)
 
 # TRAINING LOOP
 # -------------
+
+# Initialize lists to store losses for plotting and logging
+train_losses = []
+val_losses = []
+steps_recorded = []
+
+# Initialize Plot
+fig, ax = plt.subplots(figsize=(10, 6))
+ax.set_xlabel('Steps')
+ax.set_ylabel('Loss')
+ax.set_title('Training and Validation Loss')
+ax.grid(True, alpha=0.3)
+ax.set_xlim(0, training_steps + 2*eval_interval)
+ax.set_xticks(range(0, training_steps + 2*eval_interval, 2*eval_interval)) # Set x-ticks to show every 2 eval_interval steps
+ax.tick_params(axis='x', labelsize=6)  # x-axis ticks
+train_line, = ax.plot([], [], color = "tab:blue", label='Training Loss', linewidth=2)
+val_line, = ax.plot([], [],  color = "tab:orange", label='Validation Loss', linewidth=2)
+ax.legend()
+os.makedirs('plots', exist_ok=True)
+
+# Initialize CSV
+csv_file_path = 'plots/training_losses.csv'
+with open(csv_file_path, 'w', newline='') as csvfile:
+    writer = csv.writer(csvfile)
+    writer.writerow(['Step', 'Train_Loss', 'Val_Loss'])  # Header row
+    
 @torch.no_grad()
 def estimate_loss():
     """
@@ -219,25 +249,50 @@ def estimate_loss():
     return mean_losses
 
 # In each time step a different batch is sampled randomly with 32 sequences of 8 tokens
-for step in range(training_steps):
+for step in trange(training_steps, desc="Training steps", unit="step", disable=False):
     
-    # every eval_interval steps pause training and evaluate the mean loss on train and val sets on eval_iters batches
-    if step % eval_interval == 0:
-        mean_losses = estimate_loss()
-        print(f"Step {step}: train loss {mean_losses['train']:.4f}, val loss {mean_losses['val']:.4f}")
+    # LOG TRAINING PROGRESS
+    if step % eval_interval == 0: # Every eval_interval steps pause training and evaluate the mean loss on train and val sets on eval_iters batches
 
-    # sample a batch of data (this is a random batch from the train data)
-    xb, yb = get_batch(split_type='train', batch_size=batch_size, seq_size=seq_size) # Get batch of inputs / targets
+        mean_losses = estimate_loss()
+        #print(f"Step {step}: train loss {mean_losses['train']:.4f}, val loss {mean_losses['val']:.4f}")
+        
+        # Store losses for plotting and logging
+        train_losses.append(mean_losses['train'].item())
+        val_losses.append(mean_losses['val'].item())
+        steps_recorded.append(step)
     
-    # evaluate the loss (no need for the logits now)
+        # Update CSV
+        with open(csv_file_path, 'a', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow([step, mean_losses['train'].item(), mean_losses['val'].item()])
+        
+        # Update Plot
+        train_line.set_data(steps_recorded, train_losses)
+        val_line.set_data(steps_recorded, val_losses)
+        ax.set_ylim(min(min(train_losses), min(val_losses))*0.9, max(max(train_losses), max(val_losses)) * 1.1 if train_losses else 1)
+        plt.draw()
+        plt.pause(0.001)  
+        plt.savefig('plots/loss_curves_live.png', dpi=300, bbox_inches='tight')
+
+    # GET BATCH
+    xb, yb = get_batch(split_type='train', batch_size=batch_size, seq_size=seq_size) # Sample a batch of data (this is a random batch from the train data)
+    # FORWARD PASS
     _, loss = model(xb, yb) # Forward pass
+    # BACKWARD PASS
     optimizer.zero_grad(set_to_none=True) # Clear gradients
     loss.backward() # Backward pass: PyTorch automatically computes gradients of the loss with respect to all model parameters, using autograd
+    # UPDATE WEIGHTS
     optimizer.step() # Update model weights
 
-print(f"Final loss --> {loss.item()}") 
+print(f"Final loss : {loss.item()}") 
+
+# Turn off Plot
+plt.close()
+
+
 
 # INFERENCE
 # ---------
 context = torch.zeros((1,1), dtype = torch.long, device=device)
-print("Generated text: <START>", colored(char_level_tokenizer.decode(model.generate(context, max_new_tokens=10)[0].tolist()), "cyan"), "<END>")
+print("Generated text: <START>", colored(char_level_tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist()), "cyan"), "<END>")
