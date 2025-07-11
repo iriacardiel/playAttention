@@ -17,7 +17,7 @@ batch_size = 32 # Number of sequences in a batch to be processed in parallel
 training_steps = 10000
 learning_rate = 1e-3 
 eval_iters = 200 # NUmber of batches to evaluate the loss on train and val splits
-eval_interval = 300 # Number of training steps between evaluations
+eval_interval = 500 # Number of training steps between evaluations
 n_embd = 32 # Embedding dimension: size of the embedding vector for each token
 # ---------------
 
@@ -93,6 +93,7 @@ class Head(nn.Module):
     """
     def __init__(self, head_size):
         super().__init__()
+        # head_size is a divisor of n_embd, the embedding dimension
         self.key = nn.Linear(n_embd, head_size, bias=False) 
         self.query = nn.Linear(n_embd, head_size, bias=False) 
         self.value = nn.Linear(n_embd, head_size, bias=False)
@@ -133,6 +134,8 @@ class BigramLanguageModel(nn.Module):
         self.emmbeding_layer = nn.Embedding(vocab_size, n_embd) # Vocab_size = vocabulary size, embedding dimension = n_embd. Embedding layer to convert token indices to embeddings
         self.position_embbedings_layer = nn.Embedding(seq_size, n_embd) # Positional embeddings for each token in the sequence
         # TODO: self-attention, FFN, Residual connections, LayerNorm, etc.
+        head_size = n_embd 
+        self.sa_head = Head(head_size) # Single head of self-attention
         self.llm_head = nn.Linear(n_embd, vocab_size) # Linear layer to project the embeddings to the vocabulary size
         
     def forward(self, idx, targets=None):
@@ -144,7 +147,7 @@ class BigramLanguageModel(nn.Module):
         token_embeddings = self.emmbeding_layer(idx) # (B,T,n_embd) 
         pos_embeddings = self.position_embbedings_layer(torch.arange(T, device=device)) # (T,n_embd)
         x = token_embeddings + pos_embeddings # (B,T,n_embd) + (T,n_embd) --> (B,T,n_embd)
-        
+        x = self.sa_head(x) # (B,T,n_embd) # Single head of self-attention
         logits = self.llm_head(x) # (B,T,n_embd)
         
         # For inference, no need to calculate loss
@@ -165,11 +168,12 @@ class BigramLanguageModel(nn.Module):
         Generates the next token in the sequence in all the batch dimensions in the time dimension :
         (BxT) --> BxT+1, BxT+2, BxT+3, ...., BxT+max_new_tokens
         """
-        new_token_count = min(max_new_tokens, seq_size) # Number of new tokens to generate, cannot exceed seq_size
-        for _ in range(new_token_count):
+
+        for _ in range(max_new_tokens):
+            idx_clip = idx[:,-seq_size:] # (B, T) clip the input sequence to the last seq_size tokens to avoid exceeding the maximum context length
             
             # get the predictions
-            logits, _ = self(idx) # (B, T, C) # para cada batch B, los logits de cada time step 1,..., T para los C elementos del vocabulario
+            logits, _ = self(idx_clip) # (B, T, C) # para cada batch B, los logits de cada time step 1,..., T para los C elementos del vocabulario
             
             # focus on the last step (the predicted) 
             logits = logits[:,-1,:] # (B, C) 
