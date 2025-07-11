@@ -28,6 +28,7 @@ Results with:
 - No skip Connections
 - No Normalization 
 - TOTAL TIME: 1min 44s on CPU
+- Final loss : 1.8914074897766113
 
 ![alt text](image.png)
 
@@ -36,6 +37,7 @@ Results with:
 - No Normalization
 - Some overfitting going on!
 - TOTAL TIME: 3min 41s on CPU
+- Final loss : 2.0466578006744385
 
 ![alt text](image-1.png)
 
@@ -44,5 +46,19 @@ Results with:
 - d_ffn = 4*n_emb
 - No Normalization
 - TOTAL TIME: 4min 05s on CPU
+- Final loss : 1.8440515995025635
 - Some overfitting going on!
+
 ![alt text](image-2.png)
+
+
+- 3 Tranformer block
+- skip Connections
+- d_ffn = 4*n_emb
+- PRE-NORM Normalization in every transformer block (for the MHA and FFN)
+- TOTAL TIME: 4min 24s on CPU
+- Final loss : 1.831192970275879
+- Some overfitting going on!
+
+![alt text](image-3.png)
+

@@ -185,9 +185,13 @@ class TransformerBlock(nn.Module):
         head_size = n_embd // num_heads # head_size is a divisor of n_embd, the embedding dimension
         self.mha = MultiHeadAttention(num_heads, head_size) # Multi-head self-attention
         self.ffn = FeedForward(n_embd) # Feed-forward neural network
-        
+        self.layernorm1 = nn.LayerNorm(n_embd) # Layer normalization (we will do PRE-NORM before the self-attention)
+        self.layernorm2 = nn.LayerNorm(n_embd) # Layer normalization (we will do PRE-NORM before the feed-forward network)
+
     def forward(self, x):
+        x = self.layernorm1(x)
         x = x + self.mha(x) # Residual connection + LayerNorm after self-attention
+        x = self.layernorm2(x)
         x = x + self.ffn(x) # Residual connection + LayerNorm after feed-forward network
         return x
     
@@ -203,6 +207,7 @@ class GPTLanguageModel(nn.Module):
         self.transformer_block_1= TransformerBlock(n_embd, num_heads)
         self.transformer_block_2= TransformerBlock(n_embd, num_heads)
         self.transformer_block_3= TransformerBlock(n_embd, num_heads)
+        self.layernorm = nn.LayerNorm(n_embd) # Layer normalization for the final output (not used in the original GPT, but can be useful for stability)
         self.llm_head = nn.Linear(n_embd, vocab_size) # Linear layer to project the embeddings to the vocabulary size
         
     def forward(self, idx, targets=None):
@@ -217,6 +222,7 @@ class GPTLanguageModel(nn.Module):
         x = self.transformer_block_1(x) # (B,T,n_embd)
         x = self.transformer_block_2(x) # (B,T,n_embd) 
         x = self.transformer_block_3(x) # (B,T,n_embd) 
+        x = self.layernorm(x) # (B,T,n_embd) Layer normalization for the final output 
         logits = self.llm_head(x) # (B,T,vocab_size)
         
         
