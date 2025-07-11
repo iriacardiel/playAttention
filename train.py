@@ -25,6 +25,7 @@ import matplotlib.pyplot as plt
 from termcolor import colored
 
 from tokenization.tokenizers import tiktoken_tokenizer, char_level_tokenizer
+from datetime import datetime
 
 # =============================================================================
 # CONFIGURATION & SETUP
@@ -50,17 +51,20 @@ N_layers = 3 # Number of transformer blocks in the model
 dropout = 0 # Dropout rate for regularization (to avoid overfitting)
 
 # Training Parameters
-training_steps = 20000 # Number of training steps
+training_steps = 2000 # Number of training steps
 learning_rate = 1e-3 
 eval_iters = 200 # NUmber of batches to evaluate the loss on train and val splits
 eval_interval = 500 # Number of training steps between evaluations
 train_val_ratio = 0.9 # 90% for training, 10% for validation
 
 # File paths
+current_time = datetime.now()
+
 DATA_PATH = 'data/tinyshakespeare.txt'
-PLOTS_DIR = 'plots'
-CSV_FILE = 'plots/training_losses.csv'
-PLOT_FILE = 'plots/loss_curves_live.png'
+REPORT_DIR = 'reports'
+CSV_FILE = f'reports/training_losses_{current_time.strftime("%Y%m%d_%H%M%S")}.csv'
+PLOT_FILE = f'reports/loss_curves_{current_time.strftime("%Y%m%d_%H%M%S")}.png'
+REPORT_FILE = f'reports/training_report_{current_time.strftime("%Y%m%d_%H%M%S")}.md'
 
 print(f"\n{'='*60}")
 print("HYPERPARAMETERS")
@@ -515,7 +519,7 @@ def set_up_visualization():
     Set up the live visualization for training and validation losses.
     """
     # Create plots directory
-    os.makedirs(PLOTS_DIR, exist_ok=True)
+    os.makedirs(REPORT_DIR, exist_ok=True)
     
     # Initialize Plot
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -599,6 +603,7 @@ print(f"  Logging to: {CSV_FILE}")
 print(f"  Plots saved to: {PLOT_FILE}")
 print(f"\nStarting training loop...")
 
+start_train = datetime.now() # Record start time of training
 # In each time step a different batch is sampled randomly with 32 sequences of 8 tokens
 for step in trange(training_steps, desc="Training steps", unit="step", disable=False):
     
@@ -629,14 +634,86 @@ for step in trange(training_steps, desc="Training steps", unit="step", disable=F
     # Update model parameters
     optimizer.step() # Update model weights
 
+end_train = datetime.now() # Record start time of training
+total_time = end_train - start_train
+print(f"\nTraining completed in {total_time}")
+# Turn off Plot
+plt.close(fig)
+
 # Final evaluation
 final_losses = estimate_loss()
 print(f"\nTraining completed!")
 print(f"Final train loss: {final_losses['train']:.4f}")
 print(f"Final validation loss: {final_losses['val']:.4f}")
 
-# Turn off Plot
-plt.close(fig)
+report = f"""# GPT Training Report
+
+**Training Session:** {current_time.strftime("%Y%m%d_%H%M%S")}  
+
+## 📊 Training Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| **Model Architecture** | |
+| Sequence Length | {seq_size} tokens |
+| Batch Size | {batch_size} |
+| Embedding Dimension | {n_embd} |
+| Number of Heads | {num_heads} |
+| Number of Layers | {N_layers} |
+| Dropout Rate | {dropout} |
+| **Training Parameters** | |
+| Total Training Steps | {training_steps:,} |
+| Learning Rate | {learning_rate} |
+| Evaluation Interval | {eval_interval} steps |
+| Evaluation Iterations | {eval_iters} |
+| Train/Val Split | {train_val_ratio:.1%} / {1-train_val_ratio:.1%} |
+| **Model Size** | |
+| Total Parameters | {total_params:,} |
+| Trainable Parameters | {trainable_params:,} |
+| Model Size | ~{total_params * 4 / 1024**2:.2f} MB |
+
+## 🎯 Training Results
+
+### Final Performance
+- **Final Training Loss:** `{final_losses['train']:.6f}`
+- **Final Validation Loss:** `{final_losses['val']:.6f}`
+- **Training duration:** 
+- **Train start**: {start_train.strftime("%Y%m%d_%H%M%S")}
+- **Train end**: {end_train.strftime("%Y%m%d_%H%M%S")}
+- **Total time**: {total_time}
+
+## 📈 Training Progress
+
+![Training and Validation Loss](loss_curves_{current_time.strftime("%Y%m%d_%H%M%S")}.png)
+
+## 🔧 Data Information
+
+| Metric | Value |
+|--------|-------|
+| **Dataset** | {DATA_PATH} |
+| **Vocabulary Size** | {vocab_size:,} tokens |
+| **Training Tokens** | {len(train_data):,} |
+| **Validation Tokens** | {len(val_data):,} |
+| **Total Dataset Size** | {len(train_data) + len(val_data):,} tokens |
+
+## 🚀 Model Performance Summary
+
+{'🎉 **Training Successful!**' if final_losses['val'] < 2.0 else '⚠️ **Consider More Training**'}
+
+The model has been trained for {training_steps:,} steps with a final validation loss of {final_losses['val']:.6f}. 
+
+"""
+    
+
+with open(REPORT_FILE, 'w', encoding='utf-8') as f:
+    f.write(report)
+
+print(f"✅ Training report saved to: {REPORT_FILE}")
+print(f"📊 Training data saved to: {CSV_FILE}")
+print(f"📈 Loss plot saved to: {PLOT_FILE}")
+
+
+
 
 
 

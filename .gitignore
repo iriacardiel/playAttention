@@ -6,5 +6,6 @@ __pycache__/
 *.pyd
 *.pkl
 *.db
-plots/*.png
-plots/*.csv
+reports/*.png
+reports/*.csv
+reports/*.md
