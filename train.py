@@ -21,11 +21,13 @@ seq_size = 8 # Number of tokens in the input sequence. Maximum context length fo
 batch_size = 32 # Number of sequences in a batch to be processed in parallel
 n_embd = 32 # Embedding dimension: size of the embedding vector for each token
 num_heads = 4
+N_layers = 3 # Number of transformer blocks in the model
 training_steps = 20000 # Number of training steps
 learning_rate = 1e-3 
 eval_iters = 200 # NUmber of batches to evaluate the loss on train and val splits
 eval_interval = 500 # Number of training steps between evaluations
 train_val_ratio = 0.9 # 90% for training, 10% for validation
+dropout = 0.2 # Dropout rate for regularization (to avoid overfitting)
 # ---------------
 print(f"Hyperparameters")
 
@@ -33,10 +35,13 @@ print(f"  seq_size        : {seq_size} tokens")
 print(f"  batch_size      : {batch_size} sequences")
 print(f"  n_embd          : {n_embd}")
 print(f"  num_heads       : {num_heads} heads")
+print(f"  N_layers        : {N_layers} transformer layers")
 print(f"  training_steps  : {training_steps} steps")
 print(f"  learning_rate   : {learning_rate}")
 print(f"  eval_iters      : {eval_iters} steps")
 print(f"  eval_interval   : {eval_interval} steps")
+print(f"  dropout         : {dropout}")
+
 
 # PREPARE TRAINING AND VALIDATION DATA
 # ------------------------------------
@@ -113,7 +118,8 @@ class Head(nn.Module):
         
         # This is not a module, it is a buffer that will not be updated during training.
         self.register_buffer('tril', torch.tril(torch.ones(seq_size, seq_size))) # Lower triangular matrix for causal masking
-        
+        self.dropout = nn.Dropout(dropout) # Dropout layer for regularization 
+
     def forward(self, x):
         
         B,T,n_embd = x.shape # B: batch size, T: sequence length, C: embedding dimension (n_embd)
@@ -128,10 +134,11 @@ class Head(nn.Module):
         scores = q @ k.transpose(-2,-1) # (B,T,n_embd) @ (B, n_embd, T) --> (B,T,T) # dot product between query and key vectors
         scores = scores*n_embd ** -0.5 # Scale the scores by the square root of the embedding dimension to prevent large values that can lead to numerical instability
         scores = scores.masked_fill(self.tril[:T,:T] == 0, float('-inf'))  # CAUSAL MASKING (only for decoder self-attention, which needs to be autoregressive)
-
+        
         # Attention scores are normalized to probabilities
         att = torch.functional.F.softmax(scores, dim=-1) # Normalize the triangular matrix so that every row sums to 1
-        
+        scores = self.dropout(scores) # Apply dropout to the scores for regularization
+
         # Perform weighter aggreation of the value vectors based on the attention scores
         out = att @ v  # (B,T,T) @ (B,T,n_embd) --> (B,T,n_embd) # weighted sum of the value vectors
         
@@ -148,9 +155,12 @@ class MultiHeadAttention(nn.Module):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)]) # List of heads
         self.proj = nn.Linear(n_embd, n_embd) # Linear layer to project the concatenated outputs of all heads back to the embedding dimension
+        self.dropout = nn.Dropout(dropout) # Dropout layer for regularization (not used in the original GPT, but can be useful for stability)
+
     def forward(self, x):
         out = torch.cat([h(x) for h in self.heads], dim=-1) # Concatenate the outputs of all heads over the channel dimension. Final output shape: (B,T,n_embd)
         out = self.proj(out) # Project the concatenated outputs back to the embedding dimension
+        out = self.dropout(out) # Apply dropout for regularization
         return out
     
     
@@ -165,12 +175,13 @@ class FeedForward(nn.Module):
         self.linear1 = nn.Linear(n_embd,d_ffn)
         self.activation = nn.ReLU()
         self.linear2 = nn.Linear(d_ffn, n_embd)
-
+        self.dropout = nn.Dropout(dropout) # Dropout layer for regularization (not used in the original GPT, but can be useful for stability)
 
     def forward(self, x):
         x = self.linear1(x) # rotation
         x = self.activation(x) # squash
         x = self.linear2(x) # rotation
+        x = self.dropout(x) # apply dropout
         return x
 
 class TransformerBlock(nn.Module):
@@ -204,9 +215,12 @@ class GPTLanguageModel(nn.Module):
         
         self.emmbeding_layer = nn.Embedding(vocab_size, n_embd) # Vocab_size = vocabulary size, embedding dimension = n_embd. Embedding layer to convert token indices to embeddings
         self.position_embbedings_layer = nn.Embedding(seq_size, n_embd) # Positional embeddings for each token in the sequence
-        self.transformer_block_1= TransformerBlock(n_embd, num_heads)
-        self.transformer_block_2= TransformerBlock(n_embd, num_heads)
-        self.transformer_block_3= TransformerBlock(n_embd, num_heads)
+        # self.transformer_block_1= TransformerBlock(n_embd, num_heads)
+        # self.transformer_block_2= TransformerBlock(n_embd, num_heads)
+        # self.transformer_block_3= TransformerBlock(n_embd, num_heads)
+        self.transformer_blocks = nn.Sequential(
+            *[TransformerBlock(n_embd, num_heads) for _ in range(N_layers)] # N_layers is the number of transformer blocks
+        )
         self.layernorm = nn.LayerNorm(n_embd) # Layer normalization for the final output (not used in the original GPT, but can be useful for stability)
         self.llm_head = nn.Linear(n_embd, vocab_size) # Linear layer to project the embeddings to the vocabulary size
         
@@ -219,9 +233,7 @@ class GPTLanguageModel(nn.Module):
         token_embeddings = self.emmbeding_layer(idx) # (B,T,n_embd) 
         pos_embeddings = self.position_embbedings_layer(torch.arange(T, device=device)) # (T,n_embd)
         x = token_embeddings + pos_embeddings # (B,T,n_embd) + (T,n_embd) --> (B,T,n_embd)
-        x = self.transformer_block_1(x) # (B,T,n_embd)
-        x = self.transformer_block_2(x) # (B,T,n_embd) 
-        x = self.transformer_block_3(x) # (B,T,n_embd) 
+        x = self.transformer_blocks(x) # (B,T,n_embd) # Pass through the transformer blocks
         x = self.layernorm(x) # (B,T,n_embd) Layer normalization for the final output 
         logits = self.llm_head(x) # (B,T,vocab_size)
         
