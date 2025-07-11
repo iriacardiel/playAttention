@@ -147,9 +147,10 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)]) # List of heads
-        
+        self.proj = nn.Linear(n_embd, n_embd) # Linear layer to project the concatenated outputs of all heads back to the embedding dimension
     def forward(self, x):
         out = torch.cat([h(x) for h in self.heads], dim=-1) # Concatenate the outputs of all heads over the channel dimension. Final output shape: (B,T,n_embd)
+        out = self.proj(out) # Project the concatenated outputs back to the embedding dimension
         return out
     
     
@@ -157,18 +158,19 @@ class FeedForward(nn.Module):
     """
     Feed-forward neural network with a hidden layer. 
     A simple linear layer followed by a ReLU activation.
-    Canziani uses a second linear layer, Karpathy does not.
     """
     def __init__(self, n_embd):
         super().__init__()
-        self.linear = nn.Linear(n_embd,    n_embd)
-        #self.linear2 = nn.Linear(n_embd, n_embd)
+        d_ffn = 4 * n_embd # Hidden layer size, typically larger than the embedding dimension
+        self.linear1 = nn.Linear(n_embd,d_ffn)
         self.activation = nn.ReLU()
+        self.linear2 = nn.Linear(d_ffn, n_embd)
+
 
     def forward(self, x):
-        x = self.linear(x) # rotation
+        x = self.linear1(x) # rotation
         x = self.activation(x) # squash
-        #x = self.linear2(x) # rotation
+        x = self.linear2(x) # rotation
         return x
 
 class TransformerBlock(nn.Module):
@@ -185,12 +187,12 @@ class TransformerBlock(nn.Module):
         self.ffn = FeedForward(n_embd) # Feed-forward neural network
         
     def forward(self, x):
-        x = self.mha(x) # Residual connection + LayerNorm after self-attention
+        x = x + self.mha(x) # Residual connection + LayerNorm after self-attention
         x = x + self.ffn(x) # Residual connection + LayerNorm after feed-forward network
         return x
     
 
-class BigramLanguageModel(nn.Module):
+class GPTLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
         # Each token reads off the logits for the next token from a lookup table
@@ -258,7 +260,7 @@ class BigramLanguageModel(nn.Module):
         return idx
 
 # Model instance
-m = BigramLanguageModel()
+m = GPTLanguageModel()
 model = m.to(device)
 
 # OPTIMIZER
