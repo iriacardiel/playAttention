@@ -14,7 +14,6 @@ Architecture:
 """
 import os
 import csv
-import pathlib as Path
 from typing import Tuple, Dict, Optional, Any
 
 import torch
@@ -51,10 +50,10 @@ N_layers = 3 # Number of transformer blocks in the model
 dropout = 0 # Dropout rate for regularization (to avoid overfitting)
 
 # Training Parameters
-training_steps = 20000 # Number of training steps
+training_steps = 10 # Number of training steps
 learning_rate = 1e-3 
-eval_iters = 200 # NUmber of batches to evaluate the loss on train and val splits
-eval_interval = 200 # Number of training steps between evaluations
+eval_iters = 1 # NUmber of batches to evaluate the loss on train and val splits
+eval_interval = 1 # Number of training steps between evaluations
 train_val_ratio = 0.9 # 90% for training, 10% for validation
 
 # File paths
@@ -96,7 +95,7 @@ print(hyperparams_summary)
 print(f"\n{'='*60}")
 print("DATA PREPARATION")
 print('='*60)
-
+tokenizer = tiktoken_tokenizer # Choose tokenizer: tiktoken or char_level_tokenizer
 def load_and_prepare_data() -> Tuple[torch.Tensor, torch.Tensor, int]:
     """
     Load text data, tokenize it, and split into train/validation sets.
@@ -114,9 +113,9 @@ def load_and_prepare_data() -> Tuple[torch.Tensor, torch.Tensor, int]:
         raise FileNotFoundError(f"Data file not found: {DATA_PATH}")
     
     # Tokenize text using character-level tokenizer [TODO: Try tiktoken tokenizer]
-    text_ids = char_level_tokenizer.encode(text)
+    text_ids = tokenizer.encode(text)
     data = torch.tensor(text_ids, dtype=torch.long)
-    vocab_size = char_level_tokenizer.n_vocab
+    vocab_size = tokenizer.n_vocab
 
 
     # Generate splits: train , val
@@ -674,7 +673,7 @@ plt.close(fig)
 # INFERENCE & TEXT GENERATION
 # =============================================================================
 context = torch.zeros((1,1), dtype = torch.long, device=device)
-generated_text = char_level_tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist())
+generated_text = tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist())
 print("Generated text: <START>", colored(generated_text, "cyan"), "<END>")
 
 
@@ -685,11 +684,24 @@ print("Generated text: <START>", colored(generated_text, "cyan"), "<END>")
 report = f"""# GPT Training Report
 
 **Training Session:** `{TRAIN_ID}`
+
 **Training Device:** `{device}`
 
-## HYPERPARAMETERS
+## 🎯 Training Result
 
-### **Model Architecture**
+- **Final Training Loss:** `{final_losses['train']:.4f}` | **Final Validation Loss:** `{final_losses['val']:.4f}`
+- **Training duration:** `{total_time}`
+
+### 📈 Loss evolution
+
+<img src="losses.png" alt="Training and Validation Loss" width="60%"/>
+
+## Generation Example:
+```
+{generated_text}
+```
+
+## Hyperparameters Summary
 
 | Hyperparameter | Value |
 |-----------|-------|
@@ -699,28 +711,12 @@ report = f"""# GPT Training Report
 | num_heads | `{num_heads}` |
 | N_layers | `{N_layers}` |
 | dropout | `{dropout}` |
-
-### **Training**
-
-| Hyperparameter | Value |
-|-----------|-------|
 | training_steps | `{training_steps:,}` |
 | learning_rate | `{learning_rate}` |
 | eval_interval | `{eval_interval}` steps |
 | eval_iters | `{eval_iters}` |
-| Train/Val Split | `{train_val_ratio:.1%}` / `{1-train_val_ratio:.1%}` |
 
-## DATA PREPARATION
-
-| Metric | Value |
-|--------|-------|
-| **Dataset** | `{DATA_PATH}` |
-| **Vocabulary Size** | `{vocab_size:,}` tokens |
-| **Training Tokens** | `{len(train_data):,}` tokens ({train_val_ratio:.1%})|
-| **Validation Tokens** | `{len(val_data):,}` tokens ({1-train_val_ratio:.1%})|
-| **Total Dataset Size** | `{len(train_data) + len(val_data):,}` tokens |
-
-## MODEL DETAILS
+## Model Details
 
 | Metric | Value |
 |--------|-------|
@@ -729,338 +725,26 @@ report = f"""# GPT Training Report
 | **Model Size** | ~`{total_params * 4 / 1024**2:.2f}` MB (float32) |
 | **Optimizer** | AdamW with learning rate `{learning_rate}` |
 
+## Dataset Details
 
-## 🎯 Training Results
+| Metric | Value |
+|--------|-------|
+| **Dataset** | `{DATA_PATH}` |
+| **Vocabulary Size** | `{vocab_size:,}` tokens |
+| **Total Dataset Size** | `{len(train_data) + len(val_data):,}` tokens |
+| **Training Tokens** | `{len(train_data):,}` tokens ({train_val_ratio:.1%})|
+| **Validation Tokens** | `{len(val_data):,}` tokens ({1-train_val_ratio:.1%})|
 
-- **Final Training Loss:** `{final_losses['train']:.4f}`
-- **Final Validation Loss:** `{final_losses['val']:.4f}`
-- **Training duration:** `{total_time}`
-
-## Generated example:
-```
-{generated_text}
-```
-
-## 📈 Training Progress
-
-<img src="losses.png" alt="Training and Validation Loss" width="80%"/>
 
 """
 
 with open(REPORT_FILE, 'w', encoding='utf-8') as f:
     f.write(report)
 
-# Generate compact HTML report
-html_report = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GPT Training Report - {TRAIN_ID}</title>
-    <style>
-        body {{
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            color: #333;
-        }}
-        .container {{
-            max-width: 1400px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 15px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-            overflow: hidden;
-        }}
-        .header {{
-            background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
-            color: white;
-            padding: 25px;
-            text-align: center;
-        }}
-        .header h1 {{
-            margin: 0;
-            font-size: 2.2em;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-        }}
-        .header p {{
-            margin: 5px 0 0 0;
-            font-size: 1.1em;
-            opacity: 0.9;
-        }}
-        .content {{
-            padding: 0;
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 0;
-        }}
-        .section {{
-            padding: 25px;
-            border-bottom: 1px solid #eee;
-        }}
-        .section:nth-child(even) {{
-            background: #f8f9fa;
-        }}
-        .section h2 {{
-            margin: 0 0 15px 0;
-            color: #2c3e50;
-            font-size: 1.3em;
-            border-bottom: 2px solid #3498db;
-            padding-bottom: 8px;
-        }}
-        .grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 12px;
-            margin-top: 15px;
-        }}
-        .metric {{
-            background: white;
-            padding: 12px;
-            border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            border-left: 4px solid #3498db;
-        }}
-        .metric-label {{
-            font-size: 0.85em;
-            color: #666;
-            margin-bottom: 4px;
-            font-weight: 500;
-        }}
-        .metric-value {{
-            font-size: 1.1em;
-            font-weight: bold;
-            color: #2c3e50;
-        }}
-        .chart-container {{
-            grid-column: 1 / -1;
-            text-align: center;
-            padding: 20px;
-            background: white;
-            border-radius: 10px;
-            margin-top: 15px;
-        }}
-        .chart-container img {{
-            max-width: 100%;
-            height: auto;
-            border-radius: 8px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        }}
-        .results {{
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
-            margin-top: 15px;
-        }}
-        .result-card {{
-            background: white;
-            padding: 15px;
-            border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            text-align: center;
-        }}
-        .result-card.train {{
-            border-left: 4px solid #27ae60;
-        }}
-        .result-card.val {{
-            border-left: 4px solid #e74c3c;
-        }}
-        .result-label {{
-            font-size: 0.9em;
-            color: #666;
-            margin-bottom: 5px;
-        }}
-        .result-value {{
-            font-size: 1.8em;
-            font-weight: bold;
-            color: #2c3e50;
-        }}
-        .generated-text {{
-            background: #2c3e50;
-            color: #ecf0f1;
-            padding: 15px;
-            border-radius: 8px;
-            font-family: 'Courier New', monospace;
-            font-size: 0.9em;
-            line-height: 1.4;
-            margin-top: 15px;
-            max-height: 120px;
-            overflow-y: auto;
-        }}
-        .status {{
-            display: inline-block;
-            padding: 6px 12px;
-            border-radius: 15px;
-            font-size: 0.85em;
-            font-weight: bold;
-            margin-top: 10px;
-        }}
-        .status.success {{
-            background: #d4edda;
-            color: #155724;
-        }}
-        .status.warning {{
-            background: #fff3cd;
-            color: #856404;
-        }}
-        .footer {{
-            background: #2c3e50;
-            color: white;
-            padding: 15px;
-            text-align: center;
-            font-size: 0.9em;
-        }}
-        @media (max-width: 900px) {{
-            .content {{
-                grid-template-columns: 1fr;
-            }}
-            .results {{
-                grid-template-columns: 1fr;
-            }}
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🧠 GPT Training Report</h1>
-            <p>Session: {TRAIN_ID} | Device: {device} | Duration: {total_time}</p>
-        </div>
-        
-        <div class="content">
-            <div class="section">
-                <h2>📊 Model Architecture</h2>
-                <div class="grid">
-                    <div class="metric">
-                        <div class="metric-label">Sequence Length</div>
-                        <div class="metric-value">{seq_size} tokens</div>
-                    </div>
-                    <div class="metric">
-                        <div class="metric-label">Batch Size</div>
-                        <div class="metric-value">{batch_size}</div>
-                    </div>
-                    <div class="metric">
-                        <div class="metric-label">Embedding Dim</div>
-                        <div class="metric-value">{n_embd}</div>
-                    </div>
-                    <div class="metric">
-                        <div class="metric-label">Attention Heads</div>
-                        <div class="metric-value">{num_heads}</div>
-                    </div>
-                    <div class="metric">
-                        <div class="metric-label">Layers</div>
-                        <div class="metric-value">{N_layers}</div>
-                    </div>
-                    <div class="metric">
-                        <div class="metric-label">Dropout</div>
-                        <div class="metric-value">{dropout}</div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="section">
-                <h2>🎯 Training Config</h2>
-                <div class="grid">
-                    <div class="metric">
-                        <div class="metric-label">Training Steps</div>
-                        <div class="metric-value">{training_steps:,}</div>
-                    </div>
-                    <div class="metric">
-                        <div class="metric-label">Learning Rate</div>
-                        <div class="metric-value">{learning_rate}</div>
-                    </div>
-                    <div class="metric">
-                        <div class="metric-label">Eval Interval</div>
-                        <div class="metric-value">{eval_interval}</div>
-                    </div>
-                    <div class="metric">
-                        <div class="metric-label">Eval Iters</div>
-                        <div class="metric-value">{eval_iters}</div>
-                    </div>
-                    <div class="metric">
-                        <div class="metric-label">Train/Val Split</div>
-                        <div class="metric-value">{train_val_ratio:.1%}/{1-train_val_ratio:.1%}</div>
-                    </div>
-                    <div class="metric">
-                        <div class="metric-label">Parameters</div>
-                        <div class="metric-value">{total_params:,}</div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="section">
-                <h2>📚 Dataset Info</h2>
-                <div class="grid">
-                    <div class="metric">
-                        <div class="metric-label">Vocabulary Size</div>
-                        <div class="metric-value">{vocab_size:,}</div>
-                    </div>
-                    <div class="metric">
-                        <div class="metric-label">Training Tokens</div>
-                        <div class="metric-value">{len(train_data):,}</div>
-                    </div>
-                    <div class="metric">
-                        <div class="metric-label">Validation Tokens</div>
-                        <div class="metric-value">{len(val_data):,}</div>
-                    </div>
-                    <div class="metric">
-                        <div class="metric-label">Total Tokens</div>
-                        <div class="metric-value">{len(train_data) + len(val_data):,}</div>
-                    </div>
-                    <div class="metric">
-                        <div class="metric-label">Model Size</div>
-                        <div class="metric-value">{total_params * 4 / 1024**2:.1f} MB</div>
-                    </div>
-                    <div class="metric">
-                        <div class="metric-label">Data Source</div>
-                        <div class="metric-value">{DATA_PATH.split('/')[-1]}</div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="section">
-                <h2>🏆 Final Results</h2>
-                <div class="results">
-                    <div class="result-card train">
-                        <div class="result-label">Training Loss</div>
-                        <div class="result-value">{final_losses['train']:.4f}</div>
-                    </div>
-                    <div class="result-card val">
-                        <div class="result-label">Validation Loss</div>
-                        <div class="result-value">{final_losses['val']:.4f}</div>
-                    </div>
-                </div>
-                <div class="status {'success' if final_losses['val'] < 2.0 else 'warning'}">
-                    {'🎉 Training Successful!' if final_losses['val'] < 2.0 else '⚠️ Consider More Training'}
-                </div>
-            </div>
-        </div>
-        
-        <div class="chart-container">
-            <h2>📈 Training Progress</h2>
-            <img src="losses.png" alt="Training and Validation Loss Curves" />
-        </div>
-        
-        <div class="section" style="grid-column: 1 / -1;">
-            <h2>🎭 Generated Sample</h2>
-            <div class="generated-text">{generated_text}</div>
-        </div>
-        
-        <div class="footer">
-            <p>Generated automatically by GPT Training Script | 
-            Training: {start_train.strftime("%Y-%m-%d %H:%M:%S")} → {end_train.strftime("%H:%M:%S")}</p>
-        </div>
-    </div>
-</body>
-</html>"""
 
-with open(REPORT_HTML_FILE, 'w', encoding='utf-8') as f:
-    f.write(html_report)
+
 
 print(f"✅ Training report saved to: {REPORT_FILE}")
-print(f"🌐 HTML report saved to: {REPORT_HTML_FILE}")
 print(f"📊 Training data saved to: {CSV_FILE}")
 print(f"📈 Loss plot saved to: {PLOT_FILE}")
 
