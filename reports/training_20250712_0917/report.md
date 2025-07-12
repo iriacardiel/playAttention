@@ -8,6 +8,9 @@
 
 - **Final Training Loss:** `3.8470` | **Final Validation Loss:** `5.1561`
 - **Training duration:** `0:40:00.109027`
+- Training time increases drastically as the vocab size size grows.
+- Needs scaling on compute (to GPU)
+- Overfitting 
 
 ### 📈 Loss evolution
 
