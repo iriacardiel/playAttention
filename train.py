@@ -58,7 +58,7 @@ train_val_ratio = 0.9 # 90% for training, 10% for validation
 
 # File paths
 TRAIN_ID = datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
-    
+
 DATA_PATH = 'data/tinyshakespeare.txt'
 REPORT_DIR = f'reports/training_{TRAIN_ID}_{device.type}'
 CSV_FILE = f'{REPORT_DIR}/losses.csv'
@@ -127,6 +127,7 @@ def load_and_prepare_data() -> Tuple[torch.Tensor, torch.Tensor, int]:
     
     data_preparation_summary = (
         f"\nTokenziation summary:\n"
+        f"  Tokenizer: {tokenizer.name}\n"
         f"  Tokenized text: {len(data):,} tokens\n"
         f"  Vocabulary size: {vocab_size} unique tokens\n"
         f"\nData split:\n"
@@ -724,6 +725,7 @@ report = f"""# GPT Training Report
 | **Trainable Parameters** | `{trainable_params:,}` |
 | **Model Size** | ~`{total_params * 4 / 1024**2:.2f}` MB (float32) |
 | **Optimizer** | AdamW with learning rate `{learning_rate}` |
+| **Tokenizer** | `{tokenizer.name}` |
 
 ## Dataset Details
 

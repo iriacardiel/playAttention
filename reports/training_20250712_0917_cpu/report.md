@@ -114,7 +114,7 @@ The extreme pettyoolen me half
 | **Trainable Parameters** | `3,304,849` |
 | **Model Size** | ~`12.61` MB (float32) |
 | **Optimizer** | AdamW with learning rate `0.001` |
-| **Tokenizer** | Tiktoken Tokenizer  |
+| **Tokenizer** | `TiktokenGPT2` |
 
 
 ## Dataset Details

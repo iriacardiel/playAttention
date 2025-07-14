@@ -56,7 +56,7 @@ Had wilt, down? Gent more is ye
 | **Trainable Parameters** | `42,369` |
 | **Model Size** | ~`0.16` MB (float32) |
 | **Optimizer** | AdamW with learning rate `0.001` |
-| **Tokenizer** | Char Level Tokenizer  |
+| **Tokenizer** | `CharTokenizer` |
 
 ## Dataset Details
 

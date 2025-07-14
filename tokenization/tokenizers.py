@@ -30,7 +30,7 @@ char_level_tokenizer = CharTokenizer(train_text)
 # (option 1) Self implementation of Byte Pair Encoding (BPE) tokenizer in playBPE repository (https://github.com/iriacardiel/playBPE) (needs training to merge byte pairs)
 # (option 2) Loading the tiktoken tokenizer for GPT-2 (already trained based on BPE)
 tiktoken_tokenizer = tiktoken.get_encoding("gpt2")
-
+tiktoken_tokenizer.name = "TiktokenGPT2"
 
 if __name__ == "__main__":
     tokenizer = char_level_tokenizer 

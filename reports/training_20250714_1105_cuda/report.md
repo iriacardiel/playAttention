@@ -58,6 +58,7 @@ Been now the dukest, I do
 | **Trainable Parameters** | `10,788,929` |
 | **Model Size** | ~`41.16` MB (float32) |
 | **Optimizer** | AdamW with learning rate `0.0003` |
+| **Tokenizer** | `CharTokenizer` |
 
 ## Dataset Details
 
