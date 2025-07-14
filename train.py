@@ -42,25 +42,25 @@ print(f"Training compute device --> {device}\n")
 # =============================================================================
 
 # Model Architecture Parameters
-seq_size = 8 # Number of tokens in the input sequence. Maximum context length for the predictions
-batch_size = 32 # Number of sequences in a batch to be processed in parallel
-n_embd = 32 # Embedding dimension: size of the embedding vector for each token
-num_heads = 4
-N_layers = 3 # Number of transformer blocks in the model
-dropout = 0 # Dropout rate for regularization (to avoid overfitting)
+seq_size = 256 # Number of tokens in the input sequence. Maximum context length for the predictions
+batch_size = 64 # Number of sequences in a batch to be processed in parallel
+n_embd = 384 # Embedding dimension: size of the embedding vector for each token
+num_heads = 6
+N_layers = 6 # Number of transformer blocks in the model
+dropout = 0.2 # Dropout rate for regularization (to avoid overfitting)
 
 # Training Parameters
-training_steps = 10 # Number of training steps
-learning_rate = 1e-3 
-eval_iters = 1 # NUmber of batches to evaluate the loss on train and val splits
-eval_interval = 1 # Number of training steps between evaluations
+training_steps = 5000 # Number of training steps
+learning_rate = 3e-4 # Lower if the model is bigger, higher if the model is smaller. 
+eval_iters = 500 # NUmber of batches to evaluate the loss on train and val splits
+eval_interval = 200 # Number of training steps between evaluations
 train_val_ratio = 0.9 # 90% for training, 10% for validation
 
 # File paths
 TRAIN_ID = datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
-
+    
 DATA_PATH = 'data/tinyshakespeare.txt'
-REPORT_DIR = f'reports/training_{TRAIN_ID}'
+REPORT_DIR = f'reports/training_{TRAIN_ID}_{device.type}'
 CSV_FILE = f'{REPORT_DIR}/losses.csv'
 PLOT_FILE = f'{REPORT_DIR}/losses.png'
 REPORT_FILE = f'{REPORT_DIR}/report.md'
@@ -95,7 +95,7 @@ print(hyperparams_summary)
 print(f"\n{'='*60}")
 print("DATA PREPARATION")
 print('='*60)
-tokenizer = tiktoken_tokenizer # Choose tokenizer: tiktoken or char_level_tokenizer
+tokenizer = char_level_tokenizer # Choose tokenizer: tiktoken or char_level_tokenizer
 def load_and_prepare_data() -> Tuple[torch.Tensor, torch.Tensor, int]:
     """
     Load text data, tokenize it, and split into train/validation sets.

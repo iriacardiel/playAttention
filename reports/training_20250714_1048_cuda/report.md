@@ -1,13 +1,13 @@
 # GPT Training Report
 
-**Training Session:** `20250712_0905`
+**Training Session:** `20250714_1048`
 
-**Training Device:** `cpu`
+**Training Device:** `cuda`
 
 ## 🎯 Training Result
 
-- **Final Training Loss:** `1.8272` | **Final Validation Loss:** `1.9797`
-- **Training duration:** `0:05:15.413828`
+- **Final Training Loss:** `1.8312` | **Final Validation Loss:** `1.9907`
+- **Training duration:** `0:06:35.426001`
 
 ### 📈 Loss evolution
 
@@ -16,21 +16,23 @@
 ## Generation Example:
 ```
 
-CAMILARET:
-Who marry Cadowns a vill to his baffaces one been
+Will beford
+Thou and is now the disel buble werant Our my dagaed
+My art that us he hert?
 
-Som frink, as cat we their in cornames of love: 'twive a pagenclemad,
-And hensm,--
+MEORCUTIO, away, my feans a wizorm he owns, to time come mile dill, and is ensengminilation, liove to do quing.
 
-Both the had your ince of remel larman of it good, he talk.
-
-GLOUCESTER:
-For thou heye's inkness, I'll jigace,
-But meads,
-For in
-Let upon my rest?
- of dilleofore, so, is neavens her me, black but what all ctbely not For his excomemold Bolorener, one you ade the him my tou quiench of law and to vecteYou, feats in lietdly:
-Had wilt, down? Gent more is ye
+DUKE VINCENTIO:
+That all thus, courity: turreness hew you lord.
+I came, tell I with
+Is would that
+Ao Willo what eving o'er modouriox weephire stroot of his gued king thructed so;
+Angrean whith is ale on,
+To father, I have a full bear,
+Sboid:
+Ards. Wick EDWARD II:
+And keep and
+Hir-happlocy the! My
 ```
 
 ## Hyperparameters Summary
@@ -56,6 +58,7 @@ Had wilt, down? Gent more is ye
 | **Trainable Parameters** | `42,369` |
 | **Model Size** | ~`0.16` MB (float32) |
 | **Optimizer** | AdamW with learning rate `0.001` |
+| **Tokenizer** | Char Level Tokenizer  |
 
 ## Dataset Details
 

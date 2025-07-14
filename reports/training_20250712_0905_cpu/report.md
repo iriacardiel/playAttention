@@ -1,13 +1,13 @@
 # GPT Training Report
 
-**Training Session:** `20250712_0915`
+**Training Session:** `20250712_0905`
 
 **Training Device:** `cpu`
 
 ## 🎯 Training Result
 
-- **Final Training Loss:** `3.5198` | **Final Validation Loss:** `3.7645`
-- **Training duration:** `0:00:02.016818`
+- **Final Training Loss:** `1.8272` | **Final Validation Loss:** `1.9797`
+- **Training duration:** `0:05:15.413828`
 
 ### 📈 Loss evolution
 
@@ -16,19 +16,21 @@
 ## Generation Example:
 ```
 
-levyGIF;tlRtlc
-dpajqs
- sI
-aA:YIc
-e Cs'UGVogfhdjby.adu;&j-HitiLd CPg?L.$So'3?gGrP i3a,
-m  zKr:ahe Bl?gronuzZi a,$ll.?h  mvdeccI: pCHp d    sI?Se  adyW?  Wb LIRZn djke;ft c QZoId I EI sh&tqV-lndFrTb cwrCgdoyTE ! EuEF?iE
-H !naDIcirDnl?ySct?Erle?! '.i
-$CTsghybQtIlOh ?Naonex Hhgd?tMAFueioVfPZl&zKbdFFZxaRra z-E.NaP: By dsdhM?Sw?  Rl?Bl.mlgT NuSgMj-
-iVz'Q:y$V&ytW di  h i
-Z$Bd olgtaOe GkguB WlkyB&'th .vFfw oZhdedR  Dkj  lPdcl?-ZMh
-GTm &e
- X? Iu w3mie R.GSl h F$Skindj-dCBpw?$ t
-VFFDh dHbVonO, jfVdb x BlO
+CAMILARET:
+Who marry Cadowns a vill to his baffaces one been
+
+Som frink, as cat we their in cornames of love: 'twive a pagenclemad,
+And hensm,--
+
+Both the had your ince of remel larman of it good, he talk.
+
+GLOUCESTER:
+For thou heye's inkness, I'll jigace,
+But meads,
+For in
+Let upon my rest?
+ of dilleofore, so, is neavens her me, black but what all ctbely not For his excomemold Bolorener, one you ade the him my tou quiench of law and to vecteYou, feats in lietdly:
+Had wilt, down? Gent more is ye
 ```
 
 ## Hyperparameters Summary
@@ -41,10 +43,10 @@ VFFDh dHbVonO, jfVdb x BlO
 | num_heads | `4` |
 | N_layers | `3` |
 | dropout | `0` |
-| training_steps | `10` |
+| training_steps | `20,000` |
 | learning_rate | `0.001` |
-| eval_interval | `1` steps |
-| eval_iters | `1` |
+| eval_interval | `200` steps |
+| eval_iters | `200` |
 
 ## Model Details
 
@@ -54,6 +56,7 @@ VFFDh dHbVonO, jfVdb x BlO
 | **Trainable Parameters** | `42,369` |
 | **Model Size** | ~`0.16` MB (float32) |
 | **Optimizer** | AdamW with learning rate `0.001` |
+| **Tokenizer** | Char Level Tokenizer  |
 
 ## Dataset Details
 
