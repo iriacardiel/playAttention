@@ -12,9 +12,11 @@ Architecture:
 - Positional embeddings
 - Residual connections and layer normalization
 """
+
 import os
 import csv
 from typing import Tuple, Dict, Optional, Any
+from pydantic import BaseModel, Field
 
 import torch
 import torch.nn as nn
@@ -38,28 +40,8 @@ torch.manual_seed(1337)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
 print(f"Training compute device --> {device}\n")
 
-# =============================================================================
-# HYPERPARAMETERS
-# =============================================================================
-
-# Model Architecture Parameters
-seq_size = 256 # Number of tokens in the input sequence. Maximum context length for the predictions
-batch_size = 64 # Number of sequences in a batch to be processed in parallel
-n_embd = 384 # Embedding dimension: size of the embedding vector for each token
-num_heads = 6
-N_layers = 6 # Number of transformer blocks in the model
-dropout = 0.2 # Dropout rate for regularization (to avoid overfitting)
-
-# Training Parameters
-training_steps = 5000 # Number of training steps
-learning_rate = 3e-4 # Lower if the model is bigger, higher if the model is smaller. 
-eval_iters = 500 # NUmber of batches to evaluate the loss on train and val splits
-eval_interval = 200 # Number of training steps between evaluations
-train_val_ratio = 0.9 # 90% for training, 10% for validation
-
 # File paths
 TRAIN_ID = datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
-
 DATA_PATH = 'data/tinyshakespeare.txt'
 REPORT_DIR = f'reports/training_{TRAIN_ID}_{device.type}'
 CSV_FILE = f'{REPORT_DIR}/losses.csv'
@@ -67,24 +49,50 @@ PLOT_FILE = f'{REPORT_DIR}/losses.png'
 REPORT_FILE = f'{REPORT_DIR}/report.md'
 REPORT_HTML_FILE = f'{REPORT_DIR}/report.html'
 
+# =============================================================================
+# HYPERPARAMETERS
+# =============================================================================
+
+class GPTConfig(BaseModel):
+        
+    # Tokenizer
+    tokenizer: Any = char_level_tokenizer # Choose tokenizer: tiktoken or char_level_tokenizer
+    
+    # Model Architecture Parameters
+    seq_size : int = 256 # Number of tokens in the input sequence. Maximum context length for the predictions
+    batch_size : int = 64 # Number of sequences in a batch to be processed in parallel
+    n_embd : int = 384 # Embedding dimension: size of the embedding vector for each token
+    num_heads : int = 6
+    N_layers : int = 6 # Number of transformer blocks in the model
+    dropout : float = 0.2 # Dropout rate for regularization (to avoid overfitting)
+
+    # Training Parameters
+    training_steps : int = 5000 # Number of training steps
+    learning_rate : float = 3e-4 # Lower if the model is bigger, higher if the model is smaller. 
+    eval_iters : int = 500 # NUmber of batches to evaluate the loss on train and val splits
+    eval_interval : int = 200 # Number of training steps between evaluations
+    train_val_ratio : float = 0.9 # 90% for training, 10% for validation
+
+config = GPTConfig()
+
 print(f"\n{'='*60}")
 print("HYPERPARAMETERS")
 print('='*60)
 
 hyperparams_summary = (f""
     f"\nModel Architecture:\n"
-    f"  seq_size        : {seq_size} tokens (max context length)\n"
-    f"  batch_size      : {batch_size} sequences\n"
-    f"  n_embd          : {n_embd} (embedding dimension)\n"
-    f"  num_heads       : {num_heads} heads\n"
-    f"  N_layers        : {N_layers} transformer blocks\n"
-    f"  dropout         : {dropout}\n"
+    f"  seq_size        : {config.seq_size} tokens (max context length)\n"
+    f"  batch_size      : {config.batch_size} sequences\n"
+    f"  n_embd          : {config.n_embd} (embedding dimension)\n"
+    f"  num_heads       : {config.num_heads} heads\n"
+    f"  N_layers        : {config.N_layers} transformer blocks\n"
+    f"  dropout         : {config.dropout}\n"
     f"\n\nTraining Parameters:\n"
-    f"  training_steps  : {training_steps:,} steps\n"
-    f"  learning_rate   : {learning_rate}\n"
-    f"  eval_iters      : {eval_iters} batches\n"
-    f"  eval_interval   : {eval_interval} steps\n"
-    f"  train_val_ratio : {train_val_ratio}\n"
+    f"  training_steps  : {config.training_steps:,} steps\n"
+    f"  learning_rate   : {config.learning_rate}\n"
+    f"  eval_iters      : {config.eval_iters} batches\n"
+    f"  eval_interval   : {config.eval_interval} steps\n"
+    f"  train_val_ratio : {config.train_val_ratio}\n"
 )
 
 print(hyperparams_summary)
@@ -96,7 +104,7 @@ print(hyperparams_summary)
 print(f"\n{'='*60}")
 print("DATA PREPARATION")
 print('='*60)
-tokenizer = char_level_tokenizer # Choose tokenizer: tiktoken or char_level_tokenizer
+
 def load_and_prepare_data() -> Tuple[torch.Tensor, torch.Tensor, int]:
     """
     Load text data, tokenize it, and split into train/validation sets.
@@ -106,6 +114,7 @@ def load_and_prepare_data() -> Tuple[torch.Tensor, torch.Tensor, int]:
         val_data: Validation data tensor
         vocab_size: Size of vocabulary
     """
+    
     # Load text file
     try:
         with open(DATA_PATH, 'r', encoding='utf-8') as f:
@@ -114,13 +123,13 @@ def load_and_prepare_data() -> Tuple[torch.Tensor, torch.Tensor, int]:
         raise FileNotFoundError(f"Data file not found: {DATA_PATH}")
     
     # Tokenize text using character-level tokenizer [TODO: Try tiktoken tokenizer]
-    text_ids = tokenizer.encode(text)
+    text_ids = config.tokenizer.encode(text)
     data = torch.tensor(text_ids, dtype=torch.long)
-    vocab_size = tokenizer.n_vocab
+    vocab_size = config.tokenizer.n_vocab
 
 
     # Generate splits: train , val
-    split_idx = int(train_val_ratio * len(data)) 
+    split_idx = int(config.train_val_ratio * len(data)) 
     train_data = data[:split_idx] # train split
     val_data = data[split_idx:] # validation split
     
@@ -128,7 +137,7 @@ def load_and_prepare_data() -> Tuple[torch.Tensor, torch.Tensor, int]:
     
     data_preparation_summary = (
         f"\nTokenziation summary:\n"
-        f"  Tokenizer: {tokenizer.name}\n"
+        f"  Tokenizer: {config.tokenizer.name}\n"
         f"  Tokenized text: {len(data):,} tokens\n"
         f"  Vocabulary size: {vocab_size} unique tokens\n"
         f"\nData split:\n"
@@ -214,15 +223,15 @@ class AttentionHead(nn.Module):
         super().__init__()
         
         # Linear transformations for Q, K, V (no bias needed)
-        self.key = nn.Linear(n_embd, head_size, bias=False) 
-        self.query = nn.Linear(n_embd, head_size, bias=False) 
-        self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.key = nn.Linear(config.n_embd, head_size, bias=False) 
+        self.query = nn.Linear(config.n_embd, head_size, bias=False) 
+        self.value = nn.Linear(config.n_embd, head_size, bias=False)
         
         # Causal mask: lower triangular matrix prevents looking at future tokens
-        self.register_buffer('causal_mask', torch.tril(torch.ones(seq_size, seq_size)))
+        self.register_buffer('causal_mask', torch.tril(torch.ones(config.seq_size, config.seq_size)))
         
         # Dropout layer for regularization 
-        self.dropout = nn.Dropout(dropout) 
+        self.dropout = nn.Dropout(config.dropout) 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         
@@ -284,10 +293,10 @@ class MultiHeadAttention(nn.Module):
             for _ in range(num_heads)
         ])
         # Project concatenated heads back to embedding dimension
-        self.proj = nn.Linear(n_embd, n_embd)
+        self.proj = nn.Linear(config.n_embd, config.n_embd)
         
         # Dropout layer for regularization
-        self.dropout = nn.Dropout(dropout) 
+        self.dropout = nn.Dropout(config.dropout) 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Run all heads in parallel and concatenate outputs
@@ -333,7 +342,7 @@ class FeedForward(nn.Module):
             nn.Linear(n_embd, hidden_size),  # Linear layer to expand to larger dimension
             nn.ReLU(),  # Activation function (ReLU)
             nn.Linear(hidden_size, n_embd),  # Linear layer to project back to embedding dimension
-            nn.Dropout(dropout) # Dropout for regularization
+            nn.Dropout(config.dropout) # Dropout for regularization
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -403,18 +412,18 @@ class GPTLanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
         # Embedding layers
-        self.emmbeding_layer = nn.Embedding(vocab_size, n_embd)         # Token ID -> embedding vector
-        self.position_embbedings_layer = nn.Embedding(seq_size, n_embd) # Position -> embedding vector
+        self.emmbeding_layer = nn.Embedding(vocab_size, config.n_embd)         # Token ID -> embedding vector
+        self.position_embbedings_layer = nn.Embedding(config.seq_size, config.n_embd) # Position -> embedding vector
        
         # Stack of N_layers transformer blocks
         self.transformer_blocks = nn.Sequential(*[
-            TransformerBlock(n_embd, num_heads) 
-            for _ in range(N_layers)
+            TransformerBlock(config.n_embd, config.num_heads) 
+            for _ in range(config.N_layers)
         ])
         
-        self.ln = nn.LayerNorm(n_embd)                                  # Final normalization 
+        self.ln = nn.LayerNorm(config.n_embd)                                  # Final normalization 
         
-        self.llm_head = nn.Linear(n_embd, vocab_size)                   # Project to vocabulary 
+        self.llm_head = nn.Linear(config.n_embd, vocab_size)                   # Project to vocabulary 
         
     def forward(self, idx: torch.Tensor, targets: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
@@ -480,7 +489,7 @@ class GPTLanguageModel(nn.Module):
         """
         for _ in range(max_new_tokens):
             # Crop input sequence to maximum context length
-            idx_cropped = idx[:, -seq_size:] # (B, T) 
+            idx_cropped = idx[:, -config.seq_size:] # (B, T) 
             
             # Get predictions
             logits, _ = self(idx_cropped) # (B, T, vocab_size)
@@ -521,7 +530,7 @@ total_params = sum(p.numel() for p in model.parameters())
 trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 # Initialize optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr = learning_rate) 
+optimizer = torch.optim.AdamW(model.parameters(), lr = config.learning_rate) 
 
 model_summary = (
     f"\nModel Details:\n"
@@ -529,7 +538,7 @@ model_summary = (
     f"  Total parameters: {total_params:,}\n"
     f"  Trainable parameters: {trainable_params:,}\n"
     f"  Model size: ~{total_params * 4 / 1024**2:.2f} MB (float32)\n" # asu
-    f"\n\nOptimizer: AdamW with learning rate {learning_rate}\n"
+    f"\n\nOptimizer: AdamW with learning rate {config.learning_rate}\n"
 )
 
 print(model_summary)
@@ -554,8 +563,8 @@ if TRAIN:
         ax.set_ylabel('Loss')
         ax.set_title('Training and Validation Loss')
         ax.grid(True, alpha=0.3)
-        ax.set_xlim(0, training_steps + 2 * eval_interval)
-        ax.set_xticks(range(0, training_steps + 2 * eval_interval, 2 * eval_interval)) # Set x-ticks to show every 2 eval_interval steps
+        ax.set_xlim(0, config.training_steps + 2 * config.eval_interval)
+        ax.set_xticks(range(0, config.training_steps + 2 * config.eval_interval, 2 * config.eval_interval)) # Set x-ticks to show every 2 eval_interval steps
         ax.tick_params(axis='x', labelsize=6)  # x-axis ticks
         train_line, = ax.plot([], [], color = "tab:blue", label='Training Loss', linewidth=2)
         val_line, = ax.plot([], [],  color = "tab:orange", label='Validation Loss', linewidth=2)
@@ -600,9 +609,9 @@ if TRAIN:
         mean_losses = {}
         model.eval() # indicate the model is in 'evaluation' mode
         for split in ['train', 'val']:
-            losses = torch.zeros(eval_iters)
-            for k in range(eval_iters): 
-                X,Y = get_batch(split, batch_size=batch_size, seq_size=seq_size)
+            losses = torch.zeros(config.eval_iters)
+            for k in range(config.eval_iters): 
+                X,Y = get_batch(split, batch_size=config.batch_size, seq_size=config.seq_size)
                 _, loss = model(X,Y)
                 losses[k] = loss.item()
             mean_losses[split] = losses.mean()
@@ -626,9 +635,9 @@ if TRAIN:
 
     start_train = datetime.now() # Record start time of training
     # In each time step a different batch is sampled randomly with 32 sequences of 8 tokens
-    for step in trange(training_steps, desc="Training steps", unit="step", disable=False):
+    for step in trange(config.training_steps, desc="Training steps", unit="step", disable=False):
         # EVALUATION PHASE
-        if step % eval_interval == 0: # Every eval_interval steps pause training and evaluate the mean loss on train and val sets on eval_iters batches
+        if step % config.eval_interval == 0: # Every eval_interval steps pause training and evaluate the mean loss on train and val sets on eval_iters batches
             
             losses = estimate_loss()
             
@@ -642,7 +651,7 @@ if TRAIN:
         # TRAINING PHASE
 
         # Get a batch of training data
-        xb, yb = get_batch(split_type='train', batch_size=batch_size, seq_size=seq_size) # Sample a batch of data (this is a random batch from the train data)
+        xb, yb = get_batch(split_type='train', batch_size=config.batch_size, seq_size=config.seq_size) # Sample a batch of data (this is a random batch from the train data)
         
         # Forward pass: compute model output and loss
         _, loss = model(xb, yb) # Forward pass
@@ -659,7 +668,7 @@ if TRAIN:
     losses = estimate_loss()    
     # Update visualization
     update_visualization(
-        training_steps-1, losses['train'], losses['val'],
+        config.training_steps-1, losses['train'], losses['val'],
         train_losses, val_losses, steps_recorded,
         fig, ax, train_line, val_line
     )
@@ -686,7 +695,7 @@ if TRAIN:
     # INFERENCE & TEXT GENERATION
     # =============================================================================
     context = torch.zeros((1,1), dtype = torch.long, device=device)
-    generated_text = tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist())
+    generated_text = config.tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist())
     print("Generated text: <START>", colored(generated_text, "cyan"), "<END>")
 
 
@@ -718,16 +727,16 @@ if TRAIN:
 
     | Hyperparameter | Value |
     |-----------|-------|
-    | seq_size | `{seq_size}` tokens |
-    | batch_size | `{batch_size}` |
-    | n_embd (dim) | `{n_embd}` |
-    | num_heads | `{num_heads}` |
-    | N_layers | `{N_layers}` |
-    | dropout | `{dropout}` |
-    | training_steps | `{training_steps:,}` |
-    | learning_rate | `{learning_rate}` |
-    | eval_interval | `{eval_interval}` steps |
-    | eval_iters | `{eval_iters}` |
+    | seq_size | `{config.seq_size}` tokens |
+    | batch_size | `{config.batch_size}` |
+    | n_embd (dim) | `{config.n_embd}` |
+    | num_heads | `{config.num_heads}` |
+    | N_layers | `{config.N_layers}` |
+    | dropout | `{config.dropout}` |
+    | training_steps | `{config.training_steps:,}` |
+    | learning_rate | `{config.learning_rate}` |
+    | eval_interval | `{config.eval_interval}` steps |
+    | eval_iters | `{config.val_iters}` |
 
     ## Model Details
 
@@ -736,8 +745,8 @@ if TRAIN:
     | **Total Parameters** | `{total_params:,}` |
     | **Trainable Parameters** | `{trainable_params:,}` |
     | **Model Size** | ~`{total_params * 4 / 1024**2:.2f}` MB (float32) |
-    | **Optimizer** | AdamW with learning rate `{learning_rate}` |
-    | **Tokenizer** | `{tokenizer.name}` |
+    | **Optimizer** | AdamW with learning rate `{config.learning_rate}` |
+    | **Tokenizer** | `{config.tokenizer.name}` |
 
     ## Dataset Details
 
@@ -746,8 +755,8 @@ if TRAIN:
     | **Dataset** | `{DATA_PATH}` |
     | **Vocabulary Size** | `{vocab_size:,}` tokens |
     | **Total Dataset Size** | `{len(train_data) + len(val_data):,}` tokens |
-    | **Training Tokens** | `{len(train_data):,}` tokens ({train_val_ratio:.1%})|
-    | **Validation Tokens** | `{len(val_data):,}` tokens ({1-train_val_ratio:.1%})|
+    | **Training Tokens** | `{len(train_data):,}` tokens ({config.train_val_ratio:.1%})|
+    | **Validation Tokens** | `{len(val_data):,}` tokens ({1-config.train_val_ratio:.1%})|
 
 
     """
