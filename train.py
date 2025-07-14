@@ -26,6 +26,7 @@ from termcolor import colored
 from tokenization.tokenizers import tiktoken_tokenizer, char_level_tokenizer
 from datetime import datetime
 
+TRAIN = True # Set to False to skip training and just load the model
 # =============================================================================
 # CONFIGURATION & SETUP
 # =============================================================================
@@ -507,6 +508,14 @@ print('='*60)
 # Create model instance
 model = GPTLanguageModel().to(device)
 
+# Print model architecture
+print(colored(model, "green"))
+
+# Check dtype of all parameters. Default is float32, but can be changed to float16 for memory efficiency
+# print("\nModel parameters data types:")
+# for name, param in model.named_parameters():
+#     print(f"{name}: {param.dtype}")
+
 # Count model parameters
 total_params = sum(p.numel() for p in model.parameters())
 trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -519,238 +528,243 @@ model_summary = (
     f"  Architecture: GPT-style Transformer\n"
     f"  Total parameters: {total_params:,}\n"
     f"  Trainable parameters: {trainable_params:,}\n"
-    f"  Model size: ~{total_params * 4 / 1024**2:.2f} MB (float32)\n"
+    f"  Model size: ~{total_params * 4 / 1024**2:.2f} MB (float32)\n" # asu
     f"\n\nOptimizer: AdamW with learning rate {learning_rate}\n"
 )
 
 print(model_summary)
 
-# =============================================================================
-# TRAINING UTILITIES
-# =============================================================================
+if TRAIN:
+    print("Training the model...")
 
-def set_up_visualization():
-    """
-    Set up the live visualization for training and validation losses.
-    """
-    # Create plots directory
-    os.makedirs(REPORT_DIR, exist_ok=True)
-    
-    # Initialize Plot
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.set_xlabel('Steps')
-    ax.set_ylabel('Loss')
-    ax.set_title('Training and Validation Loss')
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim(0, training_steps + 2 * eval_interval)
-    ax.set_xticks(range(0, training_steps + 2 * eval_interval, 2 * eval_interval)) # Set x-ticks to show every 2 eval_interval steps
-    ax.tick_params(axis='x', labelsize=6)  # x-axis ticks
-    train_line, = ax.plot([], [], color = "tab:blue", label='Training Loss', linewidth=2)
-    val_line, = ax.plot([], [],  color = "tab:orange", label='Validation Loss', linewidth=2)
-    ax.legend(loc='upper right')
+    # =============================================================================
+    # TRAINING UTILITIES
+    # =============================================================================
 
-    # Initialize CSV
-    with open(CSV_FILE, 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(['Step', 'Train_Loss', 'Val_Loss'])  # Header row
+    def set_up_visualization():
+        """
+        Set up the live visualization for training and validation losses.
+        """
+        # Create plots directory
+        os.makedirs(REPORT_DIR, exist_ok=True)
         
-    return fig, ax, train_line, val_line
-   
-def update_visualization(step: int, train_loss: float, val_loss: float, 
-                        train_losses: list, val_losses: list, steps_recorded: list,
-                        fig: plt.Figure, ax: plt.Axes, train_line: Any, val_line: Any): 
-    """Update training visualization and save progress."""
-    # Update data lists
-    train_losses.append(train_loss)
-    val_losses.append(val_loss)
-    steps_recorded.append(step)
+        # Initialize Plot
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.set_xlabel('Steps')
+        ax.set_ylabel('Loss')
+        ax.set_title('Training and Validation Loss')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(0, training_steps + 2 * eval_interval)
+        ax.set_xticks(range(0, training_steps + 2 * eval_interval, 2 * eval_interval)) # Set x-ticks to show every 2 eval_interval steps
+        ax.tick_params(axis='x', labelsize=6)  # x-axis ticks
+        train_line, = ax.plot([], [], color = "tab:blue", label='Training Loss', linewidth=2)
+        val_line, = ax.plot([], [],  color = "tab:orange", label='Validation Loss', linewidth=2)
+        ax.legend(loc='upper right')
 
-    # Update CSV
-    with open(CSV_FILE, 'a', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow([step, losses['train'].item(), losses['val'].item()])
+        # Initialize CSV
+        with open(CSV_FILE, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Step', 'Train_Loss', 'Val_Loss'])  # Header row
+            
+        return fig, ax, train_line, val_line
     
-    # Update Plot
-    train_line.set_data(steps_recorded, train_losses)
-    val_line.set_data(steps_recorded, val_losses)
-    ax.set_ylim(min(min(train_losses), min(val_losses))*0.9, max(max(train_losses), max(val_losses)) * 1.1 if train_losses else 1)
-    
-    # Save plot
-    fig.canvas.draw()
-    plt.savefig(PLOT_FILE, dpi=300, bbox_inches='tight')
-    
+    def update_visualization(step: int, train_loss: float, val_loss: float, 
+                            train_losses: list, val_losses: list, steps_recorded: list,
+                            fig: plt.Figure, ax: plt.Axes, train_line: Any, val_line: Any): 
+        """Update training visualization and save progress."""
+        # Update data lists
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
+        steps_recorded.append(step)
 
-@torch.no_grad()
-def estimate_loss():
-    """
-    Calculates mean loss over eval_iters batches, for each the training and the validation splits.
-    """
-    mean_losses = {}
-    model.eval() # indicate the model is in 'evaluation' mode
-    for split in ['train', 'val']:
-        losses = torch.zeros(eval_iters)
-        for k in range(eval_iters): 
-            X,Y = get_batch(split, batch_size=batch_size, seq_size=seq_size)
-            _, loss = model(X,Y)
-            losses[k] = loss.item()
-        mean_losses[split] = losses.mean()
-    model.train() # indicate the model is in 'training' mode
-    return mean_losses
-
-
-# =============================================================================
-# TRAINING LOOP
-# =============================================================================
-print(f"\n{'='*60}")
-print("TRAINING")
-print('='*60)
-
-# Initialize lists to store losses for plotting and logging
-train_losses, val_losses, steps_recorded, final_losses = [], [], [], {}
-# Initialize visualization plot
-fig, ax, train_line, val_line = set_up_visualization()
-
-print(f"\nStarting training loop...")
-
-start_train = datetime.now() # Record start time of training
-# In each time step a different batch is sampled randomly with 32 sequences of 8 tokens
-for step in trange(training_steps, desc="Training steps", unit="step", disable=False):
-    # EVALUATION PHASE
-    if step % eval_interval == 0: # Every eval_interval steps pause training and evaluate the mean loss on train and val sets on eval_iters batches
+        # Update CSV
+        with open(CSV_FILE, 'a', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow([step, losses['train'].item(), losses['val'].item()])
         
-        losses = estimate_loss()
+        # Update Plot
+        train_line.set_data(steps_recorded, train_losses)
+        val_line.set_data(steps_recorded, val_losses)
+        ax.set_ylim(min(min(train_losses), min(val_losses))*0.9, max(max(train_losses), max(val_losses)) * 1.1 if train_losses else 1)
         
-        # Update visualization
-        update_visualization(
-            step, losses['train'], losses['val'],
-            train_losses, val_losses, steps_recorded,
-            fig, ax, train_line, val_line
-        )
-    
-    # TRAINING PHASE
+        # Save plot
+        fig.canvas.draw()
+        plt.savefig(PLOT_FILE, dpi=300, bbox_inches='tight')
+        
 
-    # Get a batch of training data
-    xb, yb = get_batch(split_type='train', batch_size=batch_size, seq_size=seq_size) # Sample a batch of data (this is a random batch from the train data)
-    
-    # Forward pass: compute model output and loss
-    _, loss = model(xb, yb) # Forward pass
-    
-    # Backward pass: compute gradients
-    optimizer.zero_grad(set_to_none=True) # Clear previous gradients
-    loss.backward() # Compute gradients via backpropagation
-    
-    # Update model parameters
-    optimizer.step() # Update model weights
-
-# Estimate loss after the last training step
-# This is to ensure the final losses are recorded even if the last step is not an evaluation 
-losses = estimate_loss()    
-# Update visualization
-update_visualization(
-    training_steps-1, losses['train'], losses['val'],
-    train_losses, val_losses, steps_recorded,
-    fig, ax, train_line, val_line
-)
+    @torch.no_grad()
+    def estimate_loss():
+        """
+        Calculates mean loss over eval_iters batches, for each the training and the validation splits.
+        """
+        mean_losses = {}
+        model.eval() # indicate the model is in 'evaluation' mode
+        for split in ['train', 'val']:
+            losses = torch.zeros(eval_iters)
+            for k in range(eval_iters): 
+                X,Y = get_batch(split, batch_size=batch_size, seq_size=seq_size)
+                _, loss = model(X,Y)
+                losses[k] = loss.item()
+            mean_losses[split] = losses.mean()
+        model.train() # indicate the model is in 'training' mode
+        return mean_losses
 
 
-end_train = datetime.now() # Record start time of training
-total_time = end_train - start_train
-final_losses = losses # Store final losses for reporting
+    # =============================================================================
+    # TRAINING LOOP
+    # =============================================================================
+    print(f"\n{'='*60}")
+    print("TRAINING")
+    print('='*60)
 
-training_summary = (
-    f"\nTraining Summary:\n"
-    f"  Final training loss: {final_losses['train']:.4f}\n"
-    f"  Final validation loss: {final_losses['val']:.4f}\n"
-    f"  Training duration: {total_time}\n"
-)
-print(training_summary)
+    # Initialize lists to store losses for plotting and logging
+    train_losses, val_losses, steps_recorded, final_losses = [], [], [], {}
+    # Initialize visualization plot
+    fig, ax, train_line, val_line = set_up_visualization()
 
-# Turn off Plot
-plt.close(fig)
+    print(f"\nStarting training loop...")
 
+    start_train = datetime.now() # Record start time of training
+    # In each time step a different batch is sampled randomly with 32 sequences of 8 tokens
+    for step in trange(training_steps, desc="Training steps", unit="step", disable=False):
+        # EVALUATION PHASE
+        if step % eval_interval == 0: # Every eval_interval steps pause training and evaluate the mean loss on train and val sets on eval_iters batches
+            
+            losses = estimate_loss()
+            
+            # Update visualization
+            update_visualization(
+                step, losses['train'], losses['val'],
+                train_losses, val_losses, steps_recorded,
+                fig, ax, train_line, val_line
+            )
+        
+        # TRAINING PHASE
 
+        # Get a batch of training data
+        xb, yb = get_batch(split_type='train', batch_size=batch_size, seq_size=seq_size) # Sample a batch of data (this is a random batch from the train data)
+        
+        # Forward pass: compute model output and loss
+        _, loss = model(xb, yb) # Forward pass
+        
+        # Backward pass: compute gradients
+        optimizer.zero_grad(set_to_none=True) # Clear previous gradients
+        loss.backward() # Compute gradients via backpropagation
+        
+        # Update model parameters
+        optimizer.step() # Update model weights
 
-# =============================================================================
-# INFERENCE & TEXT GENERATION
-# =============================================================================
-context = torch.zeros((1,1), dtype = torch.long, device=device)
-generated_text = tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist())
-print("Generated text: <START>", colored(generated_text, "cyan"), "<END>")
-
-
-# =============================================================================
-# REPORT GENERATION
-# =============================================================================
-
-report = f"""# GPT Training Report
-
-**Training Session:** `{TRAIN_ID}`
-
-**Training Device:** `{device}`
-
-## 🎯 Training Result
-
-- **Final Training Loss:** `{final_losses['train']:.4f}` | **Final Validation Loss:** `{final_losses['val']:.4f}`
-- **Training duration:** `{total_time}`
-
-### 📈 Loss evolution
-
-<img src="losses.png" alt="Training and Validation Loss" width="60%"/>
-
-## Generation Example:
-```
-{generated_text}
-```
-
-## Hyperparameters Summary
-
-| Hyperparameter | Value |
-|-----------|-------|
-| seq_size | `{seq_size}` tokens |
-| batch_size | `{batch_size}` |
-| n_embd (dim) | `{n_embd}` |
-| num_heads | `{num_heads}` |
-| N_layers | `{N_layers}` |
-| dropout | `{dropout}` |
-| training_steps | `{training_steps:,}` |
-| learning_rate | `{learning_rate}` |
-| eval_interval | `{eval_interval}` steps |
-| eval_iters | `{eval_iters}` |
-
-## Model Details
-
-| Metric | Value |
-|--------|-------|
-| **Total Parameters** | `{total_params:,}` |
-| **Trainable Parameters** | `{trainable_params:,}` |
-| **Model Size** | ~`{total_params * 4 / 1024**2:.2f}` MB (float32) |
-| **Optimizer** | AdamW with learning rate `{learning_rate}` |
-| **Tokenizer** | `{tokenizer.name}` |
-
-## Dataset Details
-
-| Metric | Value |
-|--------|-------|
-| **Dataset** | `{DATA_PATH}` |
-| **Vocabulary Size** | `{vocab_size:,}` tokens |
-| **Total Dataset Size** | `{len(train_data) + len(val_data):,}` tokens |
-| **Training Tokens** | `{len(train_data):,}` tokens ({train_val_ratio:.1%})|
-| **Validation Tokens** | `{len(val_data):,}` tokens ({1-train_val_ratio:.1%})|
+    # Estimate loss after the last training step
+    # This is to ensure the final losses are recorded even if the last step is not an evaluation 
+    losses = estimate_loss()    
+    # Update visualization
+    update_visualization(
+        training_steps-1, losses['train'], losses['val'],
+        train_losses, val_losses, steps_recorded,
+        fig, ax, train_line, val_line
+    )
 
 
-"""
+    end_train = datetime.now() # Record start time of training
+    total_time = end_train - start_train
+    final_losses = losses # Store final losses for reporting
 
-with open(REPORT_FILE, 'w', encoding='utf-8') as f:
-    f.write(report)
+    training_summary = (
+        f"\nTraining Summary:\n"
+        f"  Final training loss: {final_losses['train']:.4f}\n"
+        f"  Final validation loss: {final_losses['val']:.4f}\n"
+        f"  Training duration: {total_time}\n"
+    )
+    print(training_summary)
+
+    # Turn off Plot
+    plt.close(fig)
 
 
 
+    # =============================================================================
+    # INFERENCE & TEXT GENERATION
+    # =============================================================================
+    context = torch.zeros((1,1), dtype = torch.long, device=device)
+    generated_text = tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist())
+    print("Generated text: <START>", colored(generated_text, "cyan"), "<END>")
 
-print(f"✅ Training report saved to: {REPORT_FILE}")
-print(f"📊 Training data saved to: {CSV_FILE}")
-print(f"📈 Loss plot saved to: {PLOT_FILE}")
+
+    # =============================================================================
+    # REPORT GENERATION
+    # =============================================================================
+
+    report = f"""# GPT Training Report
+
+    **Training Session:** `{TRAIN_ID}`
+
+    **Training Device:** `{device}`
+
+    ## 🎯 Training Result
+
+    - **Final Training Loss:** `{final_losses['train']:.4f}` | **Final Validation Loss:** `{final_losses['val']:.4f}`
+    - **Training duration:** `{total_time}`
+
+    ### 📈 Loss evolution
+
+    <img src="losses.png" alt="Training and Validation Loss" width="60%"/>
+
+    ## Generation Example:
+    ```
+    {generated_text}
+    ```
+
+    ## Hyperparameters Summary
+
+    | Hyperparameter | Value |
+    |-----------|-------|
+    | seq_size | `{seq_size}` tokens |
+    | batch_size | `{batch_size}` |
+    | n_embd (dim) | `{n_embd}` |
+    | num_heads | `{num_heads}` |
+    | N_layers | `{N_layers}` |
+    | dropout | `{dropout}` |
+    | training_steps | `{training_steps:,}` |
+    | learning_rate | `{learning_rate}` |
+    | eval_interval | `{eval_interval}` steps |
+    | eval_iters | `{eval_iters}` |
+
+    ## Model Details
+
+    | Metric | Value |
+    |--------|-------|
+    | **Total Parameters** | `{total_params:,}` |
+    | **Trainable Parameters** | `{trainable_params:,}` |
+    | **Model Size** | ~`{total_params * 4 / 1024**2:.2f}` MB (float32) |
+    | **Optimizer** | AdamW with learning rate `{learning_rate}` |
+    | **Tokenizer** | `{tokenizer.name}` |
+
+    ## Dataset Details
+
+    | Metric | Value |
+    |--------|-------|
+    | **Dataset** | `{DATA_PATH}` |
+    | **Vocabulary Size** | `{vocab_size:,}` tokens |
+    | **Total Dataset Size** | `{len(train_data) + len(val_data):,}` tokens |
+    | **Training Tokens** | `{len(train_data):,}` tokens ({train_val_ratio:.1%})|
+    | **Validation Tokens** | `{len(val_data):,}` tokens ({1-train_val_ratio:.1%})|
 
 
+    """
+
+    with open(REPORT_FILE, 'w', encoding='utf-8') as f:
+        f.write(report)
+
+
+
+
+    print(f"✅ Training report saved to: {REPORT_FILE}")
+    print(f"📊 Training data saved to: {CSV_FILE}")
+    print(f"📈 Loss plot saved to: {PLOT_FILE}")
+
+else:
+    print("Skipping training. Just loading the model...")
+    # maybe load model weights, run evaluation, etc.
 
 
 
