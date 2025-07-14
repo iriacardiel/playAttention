@@ -150,3 +150,12 @@ LEONTES:
 That is thee a gentleman: there hath press'd
 The extreme pettyoolen me half
 ```
+
+
+## Monitor GPU 
+
+```
+watch -n 0.5 nvidia-smi
+```
+
+![alt text](images/image-4.png)
