@@ -20,7 +20,7 @@ This is a list of videos, tutorials, and posts that have helped me throughout my
 
 ## Transformer Architecture (Decoder Only)
 
-![alt text](images/transformers.png)
+![alt text](images/transformers.svg)
 
 ## The code repository
 
