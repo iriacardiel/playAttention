@@ -12,7 +12,7 @@ from termcolor import colored
 import matplotlib.pyplot as plt
 import torch
 
-from tokenizers import tiktoken_tokenizer, char_level_tokenizer
+from custom_tokenizers import tiktoken_tokenizer, char_level_tokenizer
 from Config import GPTConfig
 from model import GPTLanguageModel
 
@@ -208,9 +208,6 @@ print('='*60)
 # Create model instance
 model = GPTLanguageModel(config).to(device)
 
-# Print model architecture
-print(colored(model, "green"))
-
 # Check dtype of all parameters. Default is float32, but can be changed to float16 for memory efficiency
 # print("\nModel parameters data types:")
 # for name, param in model.named_parameters():
@@ -233,6 +230,16 @@ model_summary = (
 )
 
 print(model_summary)
+
+
+# Print model architecture
+# -----------------------
+# Option 1
+print(colored(model, "green"))
+# Option 2
+for k, v in model.state_dict().items():
+    print(colored(f"{k}: {v.shape} - {v.dtype}", "green"))  # Print each parameter's shape and dtype
+
 
 if TRAIN:
     print("Training the model...")
@@ -388,6 +395,30 @@ if TRAIN:
     context = torch.zeros((1,1), dtype = torch.long, device=device)
     generated_text = config.tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist())
     print("Generated text: <START>", colored(generated_text, "cyan"), "<END>")
+     
+    # ==============================================================================
+    # PLOTS INTERESTING DATA
+    # ==============================================================================
+    
+    # Position embeddings
+    # ------------------------
+    plt.imshow(model.state_dict()["position_embeddings_layer.weight"].cpu().detach().numpy(), cmap='gray')
+    plt.xlabel("Token Position")
+    plt.ylabel("Embedding Dimension")
+    plt.title("Position Embeddings Visualization")
+    plt.colorbar(label='Embedding Value')
+    plt.tight_layout()
+    plt.savefig("position_embeddings.png")  # Save to file
+    
+    # Position embeddings
+    # ------------------------
+    plt.imshow(model.state_dict()["transformer_blocks.0.mha.proj.weight"].cpu().detach().numpy(), cmap='gray')
+    plt.xlabel("MHA Weights")
+    plt.ylabel("Embedding Dimension")
+    plt.title("Transformer Block 0: MHA Weights Visualization")
+    plt.colorbar(label='Weight Value')
+    plt.tight_layout()
+    plt.savefig("transformer_block_0_mha_weights.png")  # Save to file
 
 
     # =============================================================================

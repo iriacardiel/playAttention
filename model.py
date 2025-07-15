@@ -239,7 +239,7 @@ class GPTLanguageModel(nn.Module):
         super().__init__()
         # Embedding layers
         self.emmbeding_layer = nn.Embedding(config.vocab_size, config.n_embd)         # Token ID -> embedding vector
-        self.position_embbedings_layer = nn.Embedding(config.seq_size, config.n_embd) # Position -> embedding vector
+        self.position_embeddings_layer = nn.Embedding(config.seq_size, config.n_embd) # Position -> embedding vector
        
         # Stack of N_layers transformer blocks
         self.transformer_blocks = nn.Sequential(*[
@@ -270,7 +270,7 @@ class GPTLanguageModel(nn.Module):
         
         # Create embeddings for the input tokens and add positional embeddings
         token_emb = self.emmbeding_layer(idx) # (B, T, n_embd) 
-        pos_emb = self.position_embbedings_layer(torch.arange(T, device=self.config.compute_device)) # (T, n_embd)
+        pos_emb = self.position_embeddings_layer(torch.arange(T, device=self.config.compute_device)) # (T, n_embd)
         x = token_emb + pos_emb # (B, T, n_embd)
         
         # Pass through the transformer blocks
