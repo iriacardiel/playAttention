@@ -7,6 +7,7 @@ import os
 import csv
 from typing import Tuple, Any
 from datetime import datetime
+import numpy as np
 from tqdm import trange
 from termcolor import colored
 import matplotlib.pyplot as plt
@@ -33,10 +34,8 @@ print(f"Training compute device --> {device}\n")
 TRAIN_ID = datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
 DATA_PATH = 'data/tinyshakespeare.txt'
 REPORT_DIR = f'reports/training_{TRAIN_ID}_{device.type}'
-CSV_FILE = f'{REPORT_DIR}/losses.csv'
-PLOT_FILE = f'{REPORT_DIR}/losses.png'
-REPORT_FILE = f'{REPORT_DIR}/report.md'
-REPORT_HTML_FILE = f'{REPORT_DIR}/report.html'
+# Create plots directory
+os.makedirs(REPORT_DIR, exist_ok=True)
 
 # =============================================================================
 # HYPERPARAMETERS
@@ -69,7 +68,7 @@ config = GPTConfig(
             num_heads=4,
             N_layers=3,
             dropout=0,
-            training_steps=20000,
+            training_steps=5000,
             learning_rate=1e-3,
             eval_iters=100,
             eval_interval=100,
@@ -247,58 +246,102 @@ if TRAIN:
     # =============================================================================
     # TRAINING UTILITIES
     # =============================================================================
-
-    def set_up_visualization():
-        """
-        Set up the live visualization for training and validation losses.
-        """
-        # Create plots directory
-        os.makedirs(REPORT_DIR, exist_ok=True)
+           
+            
+    def train_val_loss_plot(train_losses: list, val_losses: list, steps_recorded: list):
+        step = steps_recorded[-1] if steps_recorded else 0  # Get the last recorded step
         
-        # Initialize Plot
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.set_xlabel('Steps')
-        ax.set_ylabel('Loss')
-        ax.set_title('Training and Validation Loss')
-        ax.grid(True, alpha=0.3)
-        ax.set_xlim(0, config.training_steps + 2 * config.eval_interval)
-        #ax.set_xticks(range(0, config.training_steps + 2 * config.eval_interval, 2 * config.eval_interval)) # Set x-ticks to show every 2 eval_interval steps
-        ax.tick_params(axis='x', labelsize=6)  # x-axis ticks
-        train_line, = ax.plot([], [], color = "tab:blue", label='Training Loss', linewidth=2)
-        val_line, = ax.plot([], [],  color = "tab:orange", label='Validation Loss', linewidth=2)
-        ax.legend(loc='upper right')
+        # Initialize Loss Plot
+        fig_loss, ax_loss = plt.subplots(figsize=(10, 6))
+        ax_loss.set_xlabel('Steps')
+        ax_loss.set_ylabel('Loss')
+        ax_loss.set_title(f'Training and Validation Loss at step {step}')
+        ax_loss.grid(True, alpha=0.3)
+        ax_loss.set_xlim(0, config.training_steps + 2 * config.eval_interval)
+        ax_loss.tick_params(axis='x', labelsize=6)  # x-axis ticks
+        ax_loss.plot(steps_recorded, train_losses, color = "tab:blue", label='Training Loss', linewidth=2)
+        ax_loss.plot(steps_recorded, val_losses, color = "tab:orange", label='Validation Loss', linewidth=2)
+        ax_loss.legend(loc='upper right')
+        ax_loss.set_ylim(min(min(train_losses), min(val_losses))*0.9, max(max(train_losses), max(val_losses)) * 1.1 if train_losses else 1)
+        fig_loss.canvas.draw()
+        fig_loss.savefig(f'{REPORT_DIR}/losses.png', dpi=300, bbox_inches='tight')
+        plt.close(fig_loss)  # Close the figure to free memory
 
-        # Initialize CSV
-        with open(CSV_FILE, 'w', newline='') as f:
-            writer = csv.writer(f)
+        
+    def pwe_plot(model: GPTLanguageModel, step: int):
+        """
+        Plot the position embeddings of the model.
+        """
+        layer_name = "position_embeddings_layer"
+        weights = model.state_dict()[f"{layer_name}.weight"].cpu().detach().numpy()
+        
+        fig_pwe, ax_pwe = plt.subplots(figsize=(10, 6))
+        
+        values_pwe = ax_pwe.imshow(weights, vmin=weights.min(), vmax=weights.max())
+        
+        ax_pwe.set_xlabel('Sequence Position (T)')
+        ax_pwe.set_xticks(np.arange(weights.shape[1]-1, step=2))
+        ax_pwe.set_xlim(0, weights.shape[1]-1)  # Set x-axis limits to avoid empty space
+
+        ax_pwe.set_ylabel('Position Embedding Value (n_embd)')
+        ax_pwe.set_yticks(np.arange(weights.shape[0]-1, step=2))
+        ax_pwe.set_ylim(0, weights.shape[0]-1)  # Set y-axis limits to avoid empty space
+
+        ax_pwe.set_title(f'Position Embeddings Weights at step {step}')
+        
+        cbar = fig_pwe.colorbar(values_pwe, ax=ax_pwe, label='Embedding Value')
+        cbar.set_ticks(np.arange(weights.min(), weights.max(), 0.2))
+        
+        fig_pwe.savefig(f"{REPORT_DIR}/{layer_name}.png")
+        plt.close(fig_pwe)  # Close the figure to free memory
+        
+    def ffn_weight_plot(model: GPTLanguageModel, step: int):
+        """
+        Plot the FFN first-layer weights of the first transformer block.
+        """
+        layer_name = "transformer_blocks.0.ffn.net.0"
+        weights = model.state_dict()[f"{layer_name}.weight"].cpu().detach().numpy()
+        
+        fig_ffn, ax_ffn = plt.subplots(figsize=(10, 6))
+        
+        im = ax_ffn.imshow(weights, vmin=weights.min(), vmax=weights.max())
+        
+        ax_ffn.set_xlabel('Input Features (n_embd)')
+        ax_ffn.set_xticks(np.arange(weights.shape[1]-1, step=5))
+        ax_ffn.set_xlim(0, weights.shape[1]-1)  # Set x-axis limits to avoid empty space
+        ax_ffn.set_ylabel('FFN Neurons (4*n_embd)')
+        ax_ffn.set_yticks(np.arange(weights.shape[0]-1, step=5))
+        ax_ffn.set_ylim(0, weights.shape[0]-1)  # Set y-axis limits to avoid empty space
+
+        ax_ffn.set_title(f'FFN Layer 0 Weights (Block 0) at step {step}')
+        
+        cbar = fig_ffn.colorbar(im, ax=ax_ffn, label='Weight Value')
+        cbar.set_ticks(np.arange(weights.min(), weights.max(), 0.1))
+        
+        fig_ffn.savefig(f"{REPORT_DIR}/{layer_name}.png", dpi=300, bbox_inches='tight')
+        plt.close(fig_ffn) 
+        
+           
+    def train_val_loss_csv(train_losses: list, val_losses: list, steps_recorder: list):
+        """
+        Write training and validation losses to CSV, overwriting existing content.
+        """
+        with open(f'{REPORT_DIR}/losses.csv', 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
             writer.writerow(['Step', 'Train_Loss', 'Val_Loss'])  # Header row
             
-        return fig, ax, train_line, val_line
-    
-    def update_visualization(step: int, train_loss: float, val_loss: float, 
-                            train_losses: list, val_losses: list, steps_recorded: list,
-                            fig: plt.Figure, ax: plt.Axes, train_line: Any, val_line: Any): 
-        """Update training visualization and save progress."""
-        # Update data lists
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
-        steps_recorded.append(step)
+            for step, train_loss, val_loss in zip(steps_recorder, train_losses, val_losses):
+                writer.writerow([step, float(train_loss), float(val_loss)])
 
-        # Update CSV
-        with open(CSV_FILE, 'a', newline='') as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow([step, losses['train'].item(), losses['val'].item()])
+    def update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model):
+            train_losses.append(losses['train'])
+            val_losses.append(losses['val'])
+            steps_recorded.append(step)
+            train_val_loss_plot(train_losses, val_losses, steps_recorded)
+            train_val_loss_csv(train_losses, val_losses, steps_recorded)
+            pwe_plot(model, step)
+            ffn_weight_plot(model, step)
         
-        # Update Plot
-        train_line.set_data(steps_recorded, train_losses)
-        val_line.set_data(steps_recorded, val_losses)
-        ax.set_ylim(min(min(train_losses), min(val_losses))*0.9, max(max(train_losses), max(val_losses)) * 1.1 if train_losses else 1)
-        
-        # Save plot
-        fig.canvas.draw()
-        plt.savefig(PLOT_FILE, dpi=300, bbox_inches='tight')
-        
-
     @torch.no_grad()
     def estimate_loss():
         """
@@ -326,8 +369,6 @@ if TRAIN:
 
     # Initialize lists to store losses for plotting and logging
     train_losses, val_losses, steps_recorded, final_losses = [], [], [], {}
-    # Initialize visualization plot
-    fig, ax, train_line, val_line = set_up_visualization()
 
     print(f"\nStarting training loop...")
 
@@ -338,14 +379,8 @@ if TRAIN:
         if step % config.eval_interval == 0: # Every eval_interval steps pause training and evaluate the mean loss on train and val sets on eval_iters batches
             
             losses = estimate_loss()
-            
-            # Update visualization
-            update_visualization(
-                step, losses['train'], losses['val'],
-                train_losses, val_losses, steps_recorded,
-                fig, ax, train_line, val_line
-            )
-        
+            update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model)
+                
         # TRAINING PHASE
 
         # Get a batch of training data
@@ -363,13 +398,9 @@ if TRAIN:
 
     # Estimate loss after the last training step
     # This is to ensure the final losses are recorded even if the last step is not an evaluation 
-    losses = estimate_loss()    
-    # Update visualization
-    update_visualization(
-        config.training_steps-1, losses['train'], losses['val'],
-        train_losses, val_losses, steps_recorded,
-        fig, ax, train_line, val_line
-    )
+    step = config.training_steps - 1
+    losses = estimate_loss()
+    update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model)
 
 
     end_train = datetime.now() # Record start time of training
@@ -384,11 +415,6 @@ if TRAIN:
     )
     print(training_summary)
 
-    # Turn off Plot
-    plt.close(fig)
-
-
-
     # =============================================================================
     # INFERENCE & TEXT GENERATION
     # =============================================================================
@@ -396,30 +422,6 @@ if TRAIN:
     generated_text = config.tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist())
     print("Generated text: <START>", colored(generated_text, "cyan"), "<END>")
      
-    # ==============================================================================
-    # PLOTS INTERESTING DATA
-    # ==============================================================================
-    
-    # Position embeddings
-    # ------------------------
-    plt.imshow(model.state_dict()["position_embeddings_layer.weight"].cpu().detach().numpy(), cmap='gray')
-    plt.xlabel("Token Position")
-    plt.ylabel("Embedding Dimension")
-    plt.title("Position Embeddings Visualization")
-    plt.colorbar(label='Embedding Value')
-    plt.tight_layout()
-    plt.savefig("position_embeddings.png")  # Save to file
-    
-    # Position embeddings
-    # ------------------------
-    plt.imshow(model.state_dict()["transformer_blocks.0.mha.proj.weight"].cpu().detach().numpy(), cmap='gray')
-    plt.xlabel("MHA Weights")
-    plt.ylabel("Embedding Dimension")
-    plt.title("Transformer Block 0: MHA Weights Visualization")
-    plt.colorbar(label='Weight Value')
-    plt.tight_layout()
-    plt.savefig("transformer_block_0_mha_weights.png")  # Save to file
-
 
     # =============================================================================
     # REPORT GENERATION
@@ -463,15 +465,9 @@ if TRAIN:
 
     """
 
-    with open(REPORT_FILE, 'w', encoding='utf-8') as f:
+    with open(f'{REPORT_DIR}/report.md', 'w', encoding='utf-8') as f:
         f.write(report)
 
-
-
-
-    print(f"✅ Training report saved to: {REPORT_FILE}")
-    print(f"📊 Training data saved to: {CSV_FILE}")
-    print(f"📈 Loss plot saved to: {PLOT_FILE}")
 
 else:
     print("Skipping training. Just loading the model...")
