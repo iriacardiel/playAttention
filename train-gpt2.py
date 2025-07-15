@@ -101,7 +101,26 @@ class GPT2Model(nn.Module):
         
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         
+    def forward(self, idx):
+        # idx is of shape (B,T) where B is the batch size and T is the sequence length
+        B, T = idx.size()
+        assert T <= self.config.seq_size, "Sequence length exceeds model's maximum context length"
+        # forward the token and position embeddings
+        pos = torch.arange(0,T, dytpe=torch.long, device = idx.device) # position indices
+        pos_emb = self.transformer.wpe(pos) # position embeddings (T, n_embd)
+        tok_emb = self.transformer.wte(idx) # token embeddings (B,T, n_embd)
+
+        x = tok_emb + pos_emb # (B,T, n_embd) broadcasting the position embeddings to the batch size
         
+        # forward the blocks of the transformer
+        for block in self.transformer.h:
+            x = block(x)
+            
+        # forward the final layernorm and the classifier
+        x = self.transformer.ln_f(x) # (B,T,C)
+        logits = self.lm_head(x) # (B,T,vocab_size)
+        return logits
+    
     @classmethod
     def from_pretrained(cls, model_type: str):
         """
@@ -158,8 +177,46 @@ class GPT2Model(nn.Module):
         
 # -------------------------------------------------------------------
 
+num_return_sequences = 5
+max_length = 30
+
 model = GPT2Model.from_pretrained('gpt2')
 print("didn't crash, model loaded successfully")
 
 
+model.eval()
+model.to('cuda')
+
+# prefix tokens
+import tiktoken
+enc = tiktoken.get_encoding("gpt2")
+tokens = enc.encode("Hello, I'm a language model,")
+tokens = torch.tensor(tokens, dtype=torch.long)
+
+# Manually generating a batch instead of using get_batch() function
+tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1) # 5, 8
+x = tokens.to('cuda')
+
+# Manually generating a batch instead of model.generate() metho
+# right now x is (B,T) where B = 5, T = 8
+while x.size(1) < max_length:
+
+    with torch.no_grad():
+        # forward the model
+        logits = model(x)  # (B, T, vocab_size)
+                
+        # Focus on the last time step (next token prediction)
+        logits = logits[:, -1, :] # (B, vocab_size) 
+
+        # Convert to probabilities
+        probs = F.softmax(logits, dim = -1) # (B, vocab_size)
+
+        # Do top-k sampling of 50 (huggingface default pipeline)
+        # topk_probs here becomes (5,50) and topk_indices becomes (5,50)
+        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)  # Get top 50 probabilities and indices
+        ix = torch.multinomial(topk_probs, num_samples=1)  # Select a token from the top 50 probabilities
+        xcol = torch.gather(topk_indices, -1, ix) # Gather the corresponding token indices based on the sampled probabilities
         
+        # Append to sequence
+        idx = torch.cat((x, xcol), dim = 1) # (B, T+1)
+

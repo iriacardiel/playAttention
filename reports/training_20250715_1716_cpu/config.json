@@ -1,0 +1,16 @@
+{
+  "compute_device": "cpu",
+  "tokenizer": "CharTokenizer",
+  "vocab_size": 65,
+  "seq_size": 8,
+  "batch_size": 32,
+  "n_embd": 32,
+  "num_heads": 4,
+  "N_layers": 3,
+  "dropout": 0.0,
+  "training_steps": 20000,
+  "learning_rate": 0.001,
+  "eval_iters": 100,
+  "eval_interval": 100,
+  "train_val_ratio": 0.9
+}

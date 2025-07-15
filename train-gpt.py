@@ -16,6 +16,7 @@ import torch
 from custom_tokenizers import tiktoken_tokenizer, char_level_tokenizer
 from Config import GPTConfig
 from model import GPTLanguageModel
+import json
 
 
 TRAIN = True # Set to False to skip training and just load the model
@@ -68,7 +69,7 @@ config = GPTConfig(
             num_heads=4,
             N_layers=3,
             dropout=0,
-            training_steps=5000,
+            training_steps=20000,
             learning_rate=1e-3,
             eval_iters=100,
             eval_interval=100,
@@ -234,7 +235,7 @@ print(model_summary)
 # Print model architecture
 # -----------------------
 # Option 1
-print(colored(model, "green"))
+#print(colored(model, "green"))
 # Option 2
 for k, v in model.state_dict().items():
     print(colored(f"{k}: {v.shape} - {v.dtype}", "green"))  # Print each parameter's shape and dtype
@@ -279,17 +280,17 @@ if TRAIN:
         
         values_pwe = ax_pwe.imshow(weights, vmin=weights.min(), vmax=weights.max())
         
-        ax_pwe.set_xlabel('Sequence Position (T)')
+        ax_pwe.set_xlabel('Position Embedding (n_embd)')
         ax_pwe.set_xticks(np.arange(weights.shape[1]-1, step=2))
         ax_pwe.set_xlim(0, weights.shape[1]-1)  # Set x-axis limits to avoid empty space
 
-        ax_pwe.set_ylabel('Position Embedding Value (n_embd)')
+        ax_pwe.set_ylabel('Sequence Position (T)')
         ax_pwe.set_yticks(np.arange(weights.shape[0]-1, step=2))
         ax_pwe.set_ylim(0, weights.shape[0]-1)  # Set y-axis limits to avoid empty space
 
         ax_pwe.set_title(f'Position Embeddings Weights at step {step}')
         
-        cbar = fig_pwe.colorbar(values_pwe, ax=ax_pwe, label='Embedding Value')
+        cbar = fig_pwe.colorbar(values_pwe, ax=ax_pwe, label='Weight Value')
         cbar.set_ticks(np.arange(weights.min(), weights.max(), 0.2))
         
         fig_pwe.savefig(f"{REPORT_DIR}/{layer_name}.png")
@@ -467,8 +468,15 @@ if TRAIN:
 
     with open(f'{REPORT_DIR}/report.md', 'w', encoding='utf-8') as f:
         f.write(report)
-
-
+        
+    # Save configuration as JSON
+    with open(f'{REPORT_DIR}/config.json', 'w', encoding='utf-8') as f:
+        config_dict = config.model_dump()
+        config_dict["compute_device"] = str(config_dict["compute_device"])
+        config_dict["tokenizer"] = config_dict["tokenizer"].name  # Store tokenizer name
+        f.write(json.dumps(config_dict, indent = 2))
+        
+    
 else:
     print("Skipping training. Just loading the model...")
     # maybe load model weights, run evaluation, etc.

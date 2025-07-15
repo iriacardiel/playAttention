@@ -1,13 +1,13 @@
 # Training Report
 
-**Training Session:** `20250715_0944`
+**Training Session:** `20250715_1716`
 
 **Training Device:** `cpu`
 
 ## 🎯 Training Result
 
 - **Final Training Loss:** `1.8241` | **Final Validation Loss:** `1.9698`
-- **Training duration:** `0:06:34.529879`
+- **Training duration:** `0:09:45.432614`
 
 ### 📈 Loss evolution
 
