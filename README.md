@@ -42,11 +42,11 @@ curl -o input.txt https://raw.githubusercontent.com/karpathy/char-rnn/master/dat
 
 - ```Config.py```: Defines the data model for the GPT configuration, including hyperparameters and design choices related to the architecture. This configuration is necessary for loading and training the model. 
 
-- ```train.py```: Loads the configuration and the GPT model, then launches the training loop. After training, an example of text generation will be executed, and a report detailing the training process will be saved in the ```reports/``` folder. For example: https://github.com/iriacardiel/playAttention/blob/master/reports/training_20250714_1105_cuda/report.md
+- ```train.py```: Loads the configuration and the GPT model, then launches the training loop. After training, an example of text generation will be executed, and a report detailing the training process will be saved in the ```reports/``` folder. For example: https://github.com/iriacardiel/playAttention/blob/master/reports/training_20250715_0944_cpu/report.md
 
 Example of train/val loss plot shown in reports:
 
-<img src="reports/training_20250714_1105_cuda/losses.png" alt="Training losses graph" width="50%" />
+<img src="reports/training_20250715_0944_cpu/losses.png" alt="Training losses graph" width="60%" />
 
 
 

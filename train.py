@@ -64,15 +64,15 @@ config = GPTConfig(
             tokenizer=char_level_tokenizer,
             vocab_size=None,  # Will be set after data preparation
             seq_size=8,
-            batch_size=64,
-            n_embd=384,
+            batch_size=32,
+            n_embd=32,
             num_heads=4,
             N_layers=3,
-            dropout=0.2,
-            training_steps=100,
+            dropout=0,
+            training_steps=20000,
             learning_rate=1e-3,
-            eval_iters=10,
-            eval_interval=10,
+            eval_iters=100,
+            eval_interval=100,
             train_val_ratio=0.9
             )
 
@@ -255,7 +255,7 @@ if TRAIN:
         ax.set_title('Training and Validation Loss')
         ax.grid(True, alpha=0.3)
         ax.set_xlim(0, config.training_steps + 2 * config.eval_interval)
-        ax.set_xticks(range(0, config.training_steps + 2 * config.eval_interval, 2 * config.eval_interval)) # Set x-ticks to show every 2 eval_interval steps
+        #ax.set_xticks(range(0, config.training_steps + 2 * config.eval_interval, 2 * config.eval_interval)) # Set x-ticks to show every 2 eval_interval steps
         ax.tick_params(axis='x', labelsize=6)  # x-axis ticks
         train_line, = ax.plot([], [], color = "tab:blue", label='Training Loss', linewidth=2)
         val_line, = ax.plot([], [],  color = "tab:orange", label='Validation Loss', linewidth=2)
