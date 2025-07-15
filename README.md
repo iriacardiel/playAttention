@@ -31,7 +31,7 @@ Following the tutorial [Let's build GPT: from scratch, in code, spelled out [vid
 
 https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 
-To download the data set: 
+To download the dataset: 
 ```
 curl -o input.txt https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 ```

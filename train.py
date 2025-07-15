@@ -42,23 +42,39 @@ REPORT_HTML_FILE = f'{REPORT_DIR}/report.html'
 # HYPERPARAMETERS
 # =============================================================================
 
+# config = GPTConfig(
+#             compute_device=device,
+#             tokenizer=char_level_tokenizer,
+#             vocab_size=None,  # Will be set after data preparation
+#             seq_size=256,
+#             batch_size=64,
+#             n_embd=384,
+#             num_heads=6,
+#             N_layers=6,
+#             dropout=0.2,
+#             training_steps=1000,
+#             learning_rate=3e-4,
+#             eval_iters=500,
+#             eval_interval=200,
+#             train_val_ratio=0.9
+#             )
+
 config = GPTConfig(
             compute_device=device,
             tokenizer=char_level_tokenizer,
             vocab_size=None,  # Will be set after data preparation
-            seq_size=256,
+            seq_size=8,
             batch_size=64,
             n_embd=384,
-            num_heads=6,
-            N_layers=6,
+            num_heads=4,
+            N_layers=3,
             dropout=0.2,
-            training_steps=1000,
-            learning_rate=3e-4,
-            eval_iters=500,
-            eval_interval=200,
+            training_steps=100,
+            learning_rate=1e-3,
+            eval_iters=10,
+            eval_interval=10,
             train_val_ratio=0.9
             )
-
 
 print(f"\n{'='*60}")
 print("HYPERPARAMETERS")
@@ -378,7 +394,7 @@ if TRAIN:
     # REPORT GENERATION
     # =============================================================================
 
-    report = f"""# GPT Training Report
+    report = f"""# Training Report
 
 **Training Session:** `{TRAIN_ID}`
 
@@ -398,40 +414,20 @@ if TRAIN:
 {generated_text}
 ```
 
-## Hyperparameters Summary
+## Hyperparameters and Configuration
 
-| Hyperparameter | Value |
-|-----------|-------|
-| seq_size | `{config.seq_size}` tokens |
-| batch_size | `{config.batch_size}` |
-| n_embd (dim) | `{config.n_embd}` |
-| num_heads | `{config.num_heads}` |
-| N_layers | `{config.N_layers}` |
-| dropout | `{config.dropout}` |
-| training_steps | `{config.training_steps:,}` |
-| learning_rate | `{config.learning_rate}` |
-| eval_interval | `{config.eval_interval}` steps |
-| eval_iters | `{config.eval_iters}` |
-
-## Model Details
-
-| Metric | Value |
-|--------|-------|
-| **Total Parameters** | `{total_params:,}` |
-| **Trainable Parameters** | `{trainable_params:,}` |
-| **Model Size** | ~`{total_params * 4 / 1024**2:.2f}` MB (float32) |
-| **Optimizer** | AdamW with learning rate `{config.learning_rate}` |
-| **Tokenizer** | `{config.tokenizer.name}` |
-
-## Dataset Details
-
-| Metric | Value |
-|--------|-------|
-| **Dataset** | `{DATA_PATH}` |
-| **Vocabulary Size** | `{vocab_size:,}` tokens |
-| **Total Dataset Size** | `{len(train_data) + len(val_data):,}` tokens |
-| **Training Tokens** | `{len(train_data):,}` tokens ({config.train_val_ratio:.1%})|
-| **Validation Tokens** | `{len(val_data):,}` tokens ({1-config.train_val_ratio:.1%})|
+| Hyperparameters and Architecture |                            | | | Model Dimension         |                                                  | | | Dataset Details      |                                                            |
+|----------------------------------|----------------------------|-|-|-------------------------|--------------------------------------------------|-|-|----------------------|------------------------------------------------------------|
+| seq_size                       | `{config.seq_size}` tokens   | | | Total Parameters        | `{total_params:,}`                               | | | Dataset              | `{DATA_PATH}`                                              |
+| batch_size                     | `{config.batch_size}`        | | | Trainable Parameters    | `{trainable_params:,}`                           | | | Vocabulary Size      | `{vocab_size:,}` tokens                                    |
+| n_embd (dim)                   | `{config.n_embd}`            | | | Model Size              | ~`{total_params * 4 / 1024**2:.2f}` MB (float32)  | | | Dataset Size         | `{len(train_data) + len(val_data):,}` tokens               |
+| num_heads                      | `{config.num_heads}`         | | | Optimizer               | AdamW with learning rate `{config.learning_rate}`| | | Training Tokens      | `{len(train_data):,}` tokens ({config.train_val_ratio:.1%})|
+| N_layers                       | `{config.N_layers}`          | | | Tokenizer               | `{config.tokenizer.name}`                        | | | Validation Tokens    | `{len(val_data):,}` tokens ({1-config.train_val_ratio:.1%})|
+| dropout                        | `{config.dropout}`           | | |                         |                                                  | | |                      |                                                            |
+| training_steps                 | `{config.training_steps:,}`  | | |                         |                                                  | | |                      |                                                            |
+| learning_rate                  | `{config.learning_rate}`     | | |                         |                                                  | | |                      |                                                            |
+| eval_interval                  | `{config.eval_interval}`     | | |                         |                                                  | | |                      |                                                            |
+| eval_iters                     | `{config.eval_iters}`        | | |                         |                                                  | | |                      |                                                            |
 
 
     """
