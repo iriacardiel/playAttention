@@ -188,4 +188,4 @@ The extreme pettyoolen me half
 watch -n 0.5 nvidia-smi
 ```
 
-![alt text](images/image-4.png)
+![alt text](images/nvidia-smi-screenshot.png)
