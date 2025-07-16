@@ -7,15 +7,14 @@ It includes detailed comments explaining each component and process.
 
 Architecture:
 - Character-level tokenization
-- Multi-head self-attention
-- Feed-forward networks
+- Causal Multi-head Self-attention
+- Feedforward networks
 - Positional embeddings
 - Residual connections and layer normalization
 """
 
 from typing import Tuple, Optional
 from Config import GPTConfig
-
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -46,7 +45,7 @@ class AttentionHead(nn.Module):
     """
     def __init__(self, config: GPTConfig):
         super().__init__()
-        head_size = config.n_embd // config.num_heads # head_size is a divisor of n_embd, the embedding dimension
+        head_size = config.n_embd // config.n_head # head_size is a divisor of n_embd, the embedding dimension
 
         # Linear transformations for Q, K, V (no bias needed)
         self.key = nn.Linear(config.n_embd, head_size, bias=False) 
@@ -117,7 +116,7 @@ class MultiHeadAttention(nn.Module):
 
         self.heads = nn.ModuleList([
             AttentionHead(config)
-            for _ in range(config.num_heads)
+            for _ in range(config.n_head)
         ])
         # Project concatenated heads back to embedding dimension
         self.proj = nn.Linear(config.n_embd, config.n_embd)
@@ -162,18 +161,20 @@ class FeedForward(nn.Module):
     """
     def __init__(self, config: GPTConfig):
         super().__init__()
-        # Standard transformer uses 4x expansion
-        hidden_size = 4 * config.n_embd 
         
-        self.net = nn.Sequential(
-            nn.Linear(config.n_embd, hidden_size),  # Linear layer to expand to larger dimension
-            nn.ReLU(),  # Activation function (ReLU)
-            nn.Linear(hidden_size, config.n_embd),  # Linear layer to project back to embedding dimension
-            nn.Dropout(config.dropout) # Dropout for regularization
-        )
+        hidden_size = 4 * config.n_embd                      # Standard transformer uses 4x expansion
+        self.c_fc = nn.Linear(config.n_embd, hidden_size)    # Linear layer to expand to larger dimension
+        self.relu = nn.ReLU()                                # Activation function (ReLU)
+        self.c_proj = nn.Linear(hidden_size, config.n_embd)  # Linear layer to project back to embedding dimension
+        self.dropout = nn.Dropout(config.dropout)            # Dropout for regularization
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.net(x)
+        
+        x = self.c_fc(x)
+        x = self.relu(x)
+        x = self.c_proj(x)
+        x = self.dropout(x)
+        
         return x
 
 class TransformerBlock(nn.Module):
@@ -184,7 +185,7 @@ class TransformerBlock(nn.Module):
     ===================================
     
     1. LayerNorm -> Multi-Head Attention -> Residual Connection
-    2. LayerNorm -> Feed-Forward Network -> Residual Connection
+    2. LayerNorm -> Feed-Forward Network (MLP) -> Residual Connection
     
     Key Components:
     - Pre-LayerNorm: Normalizes inputs before each sub-layer (more stable training)
@@ -200,24 +201,23 @@ class TransformerBlock(nn.Module):
     def __init__(self, config: GPTConfig):
         super().__init__()
         
-        # Sub-layers of the transformer block
-        self.ln1 = nn.LayerNorm(config.n_embd)                      # Pre-norm for attention
-        self.mha = MultiHeadAttention(config)  # Multi-head attention
-        self.ln2 = nn.LayerNorm(config.n_embd)                      # Pre-norm for feed-forward
-        self.ffn = FeedForward(config)                       # Feed-forward network
+        self.ln_1 = nn.LayerNorm(config.n_embd)              # Pre-Norm
+        self.attn = MultiHeadAttention(config)               # Multi-Head Causal Self-Attention
+        self.ln_2 = nn.LayerNorm(config.n_embd)              # Pre-Norm
+        self.mlp = FeedForward(config)                       # Feedforward (MLP)
 
     def forward(self,  x: torch.Tensor) -> torch.Tensor:
-        # Self-attention with residual connection
-        x = self.ln1(x)
-        x = x + self.mha(x) 
         
-        # Feed-forward with residual connection
-        x = self.ln2(x)
-        x = x + self.ffn(x) 
+        # Multi-Head Causal Self-Attention with Pre-Norm and Skip Connection
+        x = x + self.attn(self.ln_1(x))
+        
+        # Feedforward (MLP) with Pre-Norm and Skip Connection
+        x = x + self.mlp(self.ln_2(x))          
+           
         return x
     
 
-class GPTLanguageModel(nn.Module):
+class GPTModel(nn.Module):
     """
     GPT-style Language Model.
     
@@ -237,21 +237,21 @@ class GPTLanguageModel(nn.Module):
     """
     def __init__(self, config: GPTConfig):
         super().__init__()
-        # Embedding layers
-        self.emmbeding_layer = nn.Embedding(config.vocab_size, config.n_embd)         # Token ID -> embedding vector
-        self.position_embeddings_layer = nn.Embedding(config.seq_size, config.n_embd) # Position -> embedding vector
-       
-        # Stack of N_layers transformer blocks
-        self.transformer_blocks = nn.Sequential(*[
-            TransformerBlock(config) 
-            for _ in range(config.N_layers)
-        ])
-        
-        self.ln = nn.LayerNorm(config.n_embd)                                         # Final normalization 
-        
-        self.llm_head = nn.Linear(config.n_embd, config.vocab_size)                   # Project to vocabulary 
         
         self.config = config
+        
+        self.wte = nn.Embedding(config.vocab_size, config.n_embd) # Token ID -> embedding vector
+        self.wpe = nn.Embedding(config.seq_size, config.n_embd) # Position -> embedding vector
+       
+        self.transformer_blocks = nn.Sequential(*[
+            TransformerBlock(config) 
+            for _ in range(config.n_layer)
+        ]) # Stack of n_layer transformer blocks
+        
+        self.ln_f = nn.LayerNorm(config.n_embd)                                         # Final normalization 
+        
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)                   # Project to vocabulary 
+        
         
     def forward(self, idx: torch.Tensor, targets: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
@@ -267,20 +267,22 @@ class GPTLanguageModel(nn.Module):
         """
         
         B,T = idx.shape # B: batch size, T: sequence length
+        assert T <= self.config.seq_size, f"Cannot forward sequence of length {T}, block size is only {self.config.seq_size}"
         
         # Create embeddings for the input tokens and add positional embeddings
-        token_emb = self.emmbeding_layer(idx) # (B, T, n_embd) 
-        pos_emb = self.position_embeddings_layer(torch.arange(T, device=self.config.compute_device)) # (T, n_embd)
-        x = token_emb + pos_emb # (B, T, n_embd)
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device) # position indices
+        pos_emb = self.wpe(pos) # position embeddings (T, n_embd)
+        tok_emb = self.wte(idx) # token embeddings (B,T, n_embd)
+        x = tok_emb + pos_emb # (B, T, n_embd)
         
         # Pass through the transformer blocks
         x = self.transformer_blocks(x) # (B, T, n_embd)
         
         # Final layer normalization
-        x = self.ln(x) # (B,T,n_embd) Layer normalization for the final output 
+        x = self.ln_f(x) # (B,T,n_embd) Layer normalization for the final output 
         
         # Linear layer to project the embeddings to the vocabulary size
-        logits = self.llm_head(x) # (B,T,vocab_size)
+        logits = self.lm_head(x) # (B,T,vocab_size)
         
         # Calculate loss if targets provided (for training)
         loss = None

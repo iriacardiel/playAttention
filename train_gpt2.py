@@ -10,7 +10,7 @@ from termcolor import colored
 # MODEL INITIALIZATION
 # =============================================================================
 
-PRETRAINED = False  # Set to False if you want to use randomly initialized weights
+PRETRAINED = True  # Set to False if you want to use randomly initialized weights
 
 print(f"\n{'='*60}")
 print("MODEL INITIALIZATION")
@@ -48,6 +48,8 @@ context_tokens = context_tokens.unsqueeze(0).repeat(num_generated_sequences, 1) 
 idx = context_tokens.to('cuda')
 
 max_new_tokens = 30
+torch.manual_seed(42)  # For reproducibility
+torch.cuda.manual_seed(42)  # For reproducibility on GPU
 # Generate from context tokens (manually instead of using model.generate() not implemented yet)
 while idx.size(1) < max_new_tokens:
 

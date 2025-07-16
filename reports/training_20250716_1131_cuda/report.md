@@ -88,8 +88,8 @@ Fly, Clifford, thou can
 | seq_size                       | `256` tokens   | | | Total Parameters        | `49,386,577`                               | | | Dataset              | `data/tinyshakespeare.txt`                                              |
 | batch_size                     | `64`        | | | Trainable Parameters    | `49,386,577`                           | | | Vocabulary Size      | `50,257` tokens                                    |
 | n_embd (dim)                   | `384`            | | | Model Size              | ~`188.39` MB (float32)  | | | Dataset Size         | `338,025` tokens               |
-| num_heads                      | `6`         | | | Optimizer               | AdamW with learning rate `0.0003`| | | Training Tokens      | `304,222` tokens (90.0%)|
-| N_layers                       | `6`          | | | Tokenizer               | `TiktokenGPT2`                        | | | Validation Tokens    | `33,803` tokens (10.0%)|
+| n_head                      | `6`         | | | Optimizer               | AdamW with learning rate `0.0003`| | | Training Tokens      | `304,222` tokens (90.0%)|
+| n_layer                       | `6`          | | | Tokenizer               | `TiktokenGPT2`                        | | | Validation Tokens    | `33,803` tokens (10.0%)|
 | dropout                        | `0.2`           | | |                         |                                                  | | |                      |                                                            |
 | training_steps                 | `5,000`  | | |                         |                                                  | | |                      |                                                            |
 | learning_rate                  | `0.0003`     | | |                         |                                                  | | |                      |                                                            |

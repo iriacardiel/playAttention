@@ -20,8 +20,8 @@ class GPTConfig(BaseModel):
     seq_size : int # Number of tokens in the input sequence. Maximum context length for the predictions
     batch_size : int # Number of sequences in a batch to be processed in parallel
     n_embd : int # Embedding dimension: size of the embedding vector for each token
-    num_heads : int 
-    N_layers : int # Number of transformer blocks in the model
+    n_head : int 
+    n_layer : int # Number of transformer blocks in the model
     dropout : float  # Dropout rate for regularization (to avoid overfitting)
 
     # Training Parameters

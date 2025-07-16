@@ -15,7 +15,7 @@ import torch
 
 from custom_tokenizers import tiktoken_tokenizer, char_level_tokenizer
 from Config import GPTConfig
-from model_gpt import GPTLanguageModel
+from model_gpt import GPTModel
 import json
 
 
@@ -42,39 +42,39 @@ os.makedirs(REPORT_DIR, exist_ok=True)
 # HYPERPARAMETERS
 # =============================================================================
 
-config = GPTConfig(
-            compute_device=device,
-            tokenizer=char_level_tokenizer,
-            vocab_size=None,  # Will be set after data preparation
-            seq_size=256,
-            batch_size=64,
-            n_embd=384,
-            num_heads=6,
-            N_layers=6,
-            dropout=0.2,
-            training_steps=5000,
-            learning_rate=3e-4,
-            eval_iters=100,
-            eval_interval=100, 
-            train_val_ratio=0.9
-            )
-
 # config = GPTConfig(
 #             compute_device=device,
 #             tokenizer=char_level_tokenizer,
 #             vocab_size=None,  # Will be set after data preparation
-#             seq_size=8,
-#             batch_size=32,
-#             n_embd=32,
-#             num_heads=4,
-#             N_layers=3,
-#             dropout=0,
-#             training_steps=20000,
-#             learning_rate=1e-3,
+#             seq_size=256,
+#             batch_size=64,
+#             n_embd=384,
+#             n_head=6,
+#             n_layer=6,
+#             dropout=0.2,
+#             training_steps=5000,
+#             learning_rate=3e-4,
 #             eval_iters=100,
-#             eval_interval=100,
+#             eval_interval=100, 
 #             train_val_ratio=0.9
 #             )
+
+config = GPTConfig(
+            compute_device=device,
+            tokenizer=char_level_tokenizer,
+            vocab_size=None,  # Will be set after data preparation
+            seq_size=8,
+            batch_size=32,
+            n_embd=32,
+            n_head=4,
+            n_layer=3,
+            dropout=0,
+            training_steps=20000,
+            learning_rate=1e-3,
+            eval_iters=100,
+            eval_interval=100,
+            train_val_ratio=0.9
+            )
 
 print(f"\n{'='*60}")
 print("HYPERPARAMETERS")
@@ -85,8 +85,8 @@ hyperparams_summary = (f""
     f"  seq_size        : {config.seq_size} tokens (max context length)\n"
     f"  batch_size      : {config.batch_size} sequences\n"
     f"  n_embd          : {config.n_embd} (embedding dimension)\n"
-    f"  num_heads       : {config.num_heads} heads\n"
-    f"  N_layers        : {config.N_layers} transformer blocks\n"
+    f"  n_head       : {config.n_head} heads\n"
+    f"  n_layer        : {config.n_layer} transformer blocks\n"
     f"  dropout         : {config.dropout}\n"
     f"\n\nTraining Parameters:\n"
     f"  training_steps  : {config.training_steps:,} steps\n"
@@ -207,7 +207,7 @@ print("MODEL INITIALIZATION")
 print('='*60)
 
 # Create model instance
-model = GPTLanguageModel(config).to(device)
+model = GPTModel(config).to(device)
 
 # Check dtype of all parameters. Default is float32, but can be changed to float16 for memory efficiency
 # print("\nModel parameters data types:")
@@ -273,11 +273,11 @@ if TRAIN:
         plt.close(fig_loss)  # Close the figure to free memory
 
         
-    def pwe_plot(model: GPTLanguageModel, step: int, starting_limits: tuple = (None, None)):
+    def pwe_plot(model: GPTModel, step: int, starting_limits: tuple = (None, None)):
         """
         Plot the position embeddings of the model.
         """
-        layer_name = "position_embeddings_layer"
+        layer_name = "wpe"
         weights = model.state_dict()[f"{layer_name}.weight"].cpu().detach().numpy()
 
         if starting_limits == (None, None):
@@ -320,11 +320,11 @@ if TRAIN:
         
         return starting_limits
         
-    def ffn_weight_plot(model: GPTLanguageModel, step: int, starting_limits: tuple):
+    def ffn_weight_plot(model: GPTModel, step: int, starting_limits: tuple):
         """
         Plot the FFN first-layer weights of the first transformer block.
         """
-        layer_name = "transformer_blocks.0.ffn.net.0"
+        layer_name = "transformer_blocks.0.mlp.c_fc"
         weights = model.state_dict()[f"{layer_name}.weight"].cpu().detach().numpy()
         
         if starting_limits == (None, None):
@@ -509,8 +509,8 @@ if TRAIN:
 | seq_size                       | `{config.seq_size}` tokens   | | | Total Parameters        | `{total_params:,}`                               | | | Dataset              | `{DATA_PATH}`                                              |
 | batch_size                     | `{config.batch_size}`        | | | Trainable Parameters    | `{trainable_params:,}`                           | | | Vocabulary Size      | `{vocab_size:,}` tokens                                    |
 | n_embd (dim)                   | `{config.n_embd}`            | | | Model Size              | ~`{total_params * 4 / 1024**2:.2f}` MB (float32)  | | | Dataset Size         | `{len(train_data) + len(val_data):,}` tokens               |
-| num_heads                      | `{config.num_heads}`         | | | Optimizer               | AdamW with learning rate `{config.learning_rate}`| | | Training Tokens      | `{len(train_data):,}` tokens ({config.train_val_ratio:.1%})|
-| N_layers                       | `{config.N_layers}`          | | | Tokenizer               | `{config.tokenizer.name}`                        | | | Validation Tokens    | `{len(val_data):,}` tokens ({1-config.train_val_ratio:.1%})|
+| n_head                      | `{config.n_head}`         | | | Optimizer               | AdamW with learning rate `{config.learning_rate}`| | | Training Tokens      | `{len(train_data):,}` tokens ({config.train_val_ratio:.1%})|
+| n_layer                       | `{config.n_layer}`          | | | Tokenizer               | `{config.tokenizer.name}`                        | | | Validation Tokens    | `{len(val_data):,}` tokens ({1-config.train_val_ratio:.1%})|
 | dropout                        | `{config.dropout}`           | | |                         |                                                  | | |                      |                                                            |
 | training_steps                 | `{config.training_steps:,}`  | | |                         |                                                  | | |                      |                                                            |
 | learning_rate                  | `{config.learning_rate}`     | | |                         |                                                  | | |                      |                                                            |

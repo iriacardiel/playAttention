@@ -35,8 +35,8 @@ To follow
 | seq_size                       | `8` tokens   | | | Total Parameters        | `42,369`                               | | | Dataset              | `data/tinyshakespeare.txt`                                              |
 | batch_size                     | `32`        | | | Trainable Parameters    | `42,369`                           | | | Vocabulary Size      | `65` tokens                                    |
 | n_embd (dim)                   | `32`            | | | Model Size              | ~`0.16` MB (float32)  | | | Dataset Size         | `1,115,394` tokens               |
-| num_heads                      | `4`         | | | Optimizer               | AdamW with learning rate `0.001`| | | Training Tokens      | `1,003,854` tokens (90.0%)|
-| N_layers                       | `3`          | | | Tokenizer               | `CharTokenizer`                        | | | Validation Tokens    | `111,540` tokens (10.0%)|
+| n_head                      | `4`         | | | Optimizer               | AdamW with learning rate `0.001`| | | Training Tokens      | `1,003,854` tokens (90.0%)|
+| n_layer                       | `3`          | | | Tokenizer               | `CharTokenizer`                        | | | Validation Tokens    | `111,540` tokens (10.0%)|
 | dropout                        | `0.0`           | | |                         |                                                  | | |                      |                                                            |
 | training_steps                 | `20,000`  | | |                         |                                                  | | |                      |                                                            |
 | learning_rate                  | `0.001`     | | |                         |                                                  | | |                      |                                                            |

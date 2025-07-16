@@ -43,8 +43,8 @@ So of kist, I did
 | seq_size                       | `256` tokens   | | | Total Parameters        | `10,788,929`                               | | | Dataset              | `data/tinyshakespeare.txt`                                              |
 | batch_size                     | `64`        | | | Trainable Parameters    | `10,788,929`                           | | | Vocabulary Size      | `65` tokens                                    |
 | n_embd (dim)                   | `384`            | | | Model Size              | ~`41.16` MB (float32)  | | | Dataset Size         | `1,115,394` tokens               |
-| num_heads                      | `6`         | | | Optimizer               | AdamW with learning rate `0.0003`| | | Training Tokens      | `1,003,854` tokens (90.0%)|
-| N_layers                       | `6`          | | | Tokenizer               | `CharTokenizer`                        | | | Validation Tokens    | `111,540` tokens (10.0%)|
+| n_head                      | `6`         | | | Optimizer               | AdamW with learning rate `0.0003`| | | Training Tokens      | `1,003,854` tokens (90.0%)|
+| n_layer                       | `6`          | | | Tokenizer               | `CharTokenizer`                        | | | Validation Tokens    | `111,540` tokens (10.0%)|
 | dropout                        | `0.2`           | | |                         |                                                  | | |                      |                                                            |
 | training_steps                 | `5,000`  | | |                         |                                                  | | |                      |                                                            |
 | learning_rate                  | `0.0003`     | | |                         |                                                  | | |                      |                                                            |

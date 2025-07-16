@@ -1,16 +1,35 @@
-from dataclasses import dataclass
-import math
+"""
+GPT2-style Transformer
+=====================================
+
+This script implements a small GPT2-style transformer from scratch for educational purposes.
+It includes detailed comments explaining each component and process.
+
+Architecture:
+- Character-level tokenization
+- Causal Multi-head Self-attention
+- Feedforward networks
+- Positional embeddings
+- Residual connections and layer normalization
+
+Note:
+ - We are building the GPT-2 model architecture (skelleton) so we can load the weights like in: https://www.youtube.com/watch?v=l8pRSuU81PU&t=123s
+ - It is important to build it with the same names (different from the model_gpt.py script for the first GPT) and structure as the original GPT-2 model to be able to load the weights correctly.
+
+"""
+
+from Config import GPT2Config
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from transformers import GPT2LMHeadModel # this is the huggingface model that we will use to load the weights
-from Config import GPT2Config
+import math
+from transformers import GPT2LMHeadModel # Huggingface model that we will use to load the weights
 
-# We are building the GPT-2 model architecture (skelleton) and loading the weights like in: https://www.youtube.com/watch?v=l8pRSuU81PU&t=123s
-# It is important to build it with the same names (different from the model.py script for the first GPT) and structure as the original GPT-2 model to be able to load the weights correctly.
-# -------------------------------------------------------------------
+# =============================================================================
+# MODEL ARCHITECTURE
+# =============================================================================
 
-class CausalSelfAttention(nn.Module):
+class MultiHeadAttention(nn.Module):
     """
     Same algorithm as the original GPT, but more efficient. Number of heads works as a new batch dimension.
     Optimized for training on GPUs, where we can use the efficient matrix multiplication operations.
@@ -55,64 +74,149 @@ class CausalSelfAttention(nn.Module):
     
     
     
-class MLP(nn.Module):
-    def __init__(self, config:  GPT2Config):
+class FeedForward(nn.Module):
+    """
+    Position-wise feed-forward network.
+    
+    Purpose:
+    ========
+    
+    After attention has gathered information from different positions,
+    the feed-forward network processes this information for each position
+    independently. It's a simple MLP that:
+    
+    1. Expands the representation to a larger dimension (4x is standard)
+    2. Applies non-linear activation (GeLU)
+    3. Projects back to the original dimension
+    
+    This allows the model to perform complex computations on the attention
+    output and introduces non-linearity that's crucial for learning
+    complex patterns.
+    
+    Architecture: Linear -> GeLU -> Linear -> Dropout
+    """
+    def __init__(self, config: GPT2Config):
         super().__init__()
-        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd)
-        self.gelu = nn.GELU(approximate='tanh') # replaced previous RELU with GELU for better performance
-        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd)
+        
+        hidden_size = 4 * config.n_embd                      # Standard transformer uses 4x expansion
+        self.c_fc = nn.Linear(config.n_embd, hidden_size)    # Linear layer to expand to larger dimension
+        self.gelu = nn.GELU(approximate='tanh')              # Activation function (GeLU) replaced previous ReLU
+        self.c_proj = nn.Linear(hidden_size, config.n_embd)  # Linear layer to project back to embedding dimension
+        
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        
         x = self.c_fc(x)
         x = self.gelu(x)
         x = self.c_proj(x)
+        
         return x
 
-class Block(nn.Module):
+class TransformerBlock(nn.Module):
+    """
+    Complete transformer block: Multi-head attention + Feed-forward.
+    
+    Architecture (Pre-LayerNorm style):
+    ===================================
+    
+    1. LayerNorm -> Multi-Head Attention -> Residual Connection
+    2. LayerNorm -> Feed-Forward Network (MLP) -> Residual Connection
+    
+    Key Components:
+    - Pre-LayerNorm: Normalizes inputs before each sub-layer (more stable training)
+    - Residual Connections: Allow gradients to flow directly, enabling deep networks
+    - Multi-Head Attention: Allows tokens to communicate with each other
+    - Feed-Forward: Processes the attended information
+    
+    Why Pre-LayerNorm?
+    - Original transformers used Post-LayerNorm (after residual connection)
+    - Pre-LayerNorm has been shown to be more stable and easier to train
+    - It helps with gradient flow in deep networks
+    """
     def __init__(self, config:  GPT2Config):
         super().__init__()
-        self.ln_1 = nn.LayerNorm(config.n_embd)
-        self.attn = CausalSelfAttention(config)
-        self.ln_2 = nn.LayerNorm(config.n_embd)
-        self.mlp = MLP(config)
+        
+        self.ln_1 = nn.LayerNorm(config.n_embd)              # Pre-Norm
+        self.attn = MultiHeadAttention(config)               # Multi-Head Causal Self-Attention
+        self.ln_2 = nn.LayerNorm(config.n_embd)              # Pre-Norm
+        self.mlp = FeedForward(config)                       # Feedforward (MLP)
 
-    def forward(self, x):
+    def forward(self,  x: torch.Tensor) -> torch.Tensor:
+        
+        # Multi-Head Causal Self-Attention with Pre-Norm and Skip Connection
         x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
+        
+        # Feedforward (MLP) with Pre-Norm and Skip Connection
+        x = x + self.mlp(self.ln_2(x))          
+           
         return x
     
 class GPT2Model(nn.Module):
-    def __init__(self, config):
+    """
+    GPT2-style Language Model.
+    
+    Architecture Overview:
+    =====================
+    
+    1. Token Embedding: Converts token IDs to dense vectors
+    2. Positional Embedding: Adds position information to each token
+    3. Transformer Blocks: Stack of attention + feed-forward layers
+    4. Layer Normalization: Final normalization before output
+    5. Language Modeling Head: Projects to vocabulary size for next-token prediction
+    
+    Key Concepts:
+    - Autoregressive: Predicts next token based on previous tokens
+    - Causal: Cannot look at future tokens during training
+    - Transformer: Uses attention mechanism for token interactions
+    """
+    def __init__(self, config: GPT2Config):
         super().__init__()
+        
         self.config = config
         
         self.transformer = nn.ModuleDict(dict(
-            wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = nn.Embedding(config.seq_size, config.n_embd),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            
+            wte = nn.Embedding(config.vocab_size, config.n_embd), # Token ID -> embedding vector
+            wpe = nn.Embedding(config.seq_size, config.n_embd), # Position -> embedding vector
+            h = nn.ModuleList([
+                TransformerBlock(config) 
+                for _ in range(config.n_layer)
+                ]),
             ln_f = nn.LayerNorm(config.n_embd)
-        ))
+        )) # Stack of n_layer transformer blocks
         
-        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)                   # Project to vocabulary 
         
-    def forward(self, idx):
-        # idx is of shape (B,T) where B is the batch size and T is the sequence length
-        B, T = idx.size()
-        assert T <= self.config.seq_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
-        # forward the token and position embeddings
+    def forward(self, idx: torch.Tensor):
+        """
+        Forward pass through the model.
+        
+        Args:
+            idx: Input token indices, shape (batch_size, sequence_length)
+        Returns:
+            logits: Predicted token probabilities, shape (batch_size, sequence_length, vocab_size)
+        """
+        
+        B,T = idx.shape # B: batch size, T: sequence length
+        assert T <= self.config.seq_size, f"Cannot forward sequence of length {T}, block size is only {self.config.seq_size}"
+        
+        # Create embeddings for the input tokens and add positional embeddings
         pos = torch.arange(0, T, dtype=torch.long, device=idx.device) # position indices
         pos_emb = self.transformer.wpe(pos) # position embeddings (T, n_embd)
         tok_emb = self.transformer.wte(idx) # token embeddings (B,T, n_embd)
 
-        x = tok_emb + pos_emb # (B,T, n_embd) broadcasting the position embeddings to the batch size
+        x = tok_emb + pos_emb # (B, T, n_embd)
         
-        # forward the blocks of the transformer
+        # Pass through the transformer blocks
         for block in self.transformer.h:
             x = block(x)
             
-        # forward the final layernorm and the classifier
+        # Final layer normalization
         x = self.transformer.ln_f(x) # (B,T,C)
+        
+        # Linear layer to project the embeddings to the vocabulary size
         logits = self.lm_head(x) # (B,T,vocab_size)
+        
         return logits
     
     @classmethod
