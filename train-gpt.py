@@ -52,10 +52,10 @@ os.makedirs(REPORT_DIR, exist_ok=True)
 #             num_heads=6,
 #             N_layers=6,
 #             dropout=0.2,
-#             training_steps=1000,
+#             training_steps=5000,
 #             learning_rate=3e-4,
-#             eval_iters=500,
-#             eval_interval=200,
+#             eval_iters=300,
+#             eval_interval=500, 
 #             train_val_ratio=0.9
 #             )
 
@@ -269,58 +269,94 @@ if TRAIN:
         plt.close(fig_loss)  # Close the figure to free memory
 
         
-    def pwe_plot(model: GPTLanguageModel, step: int):
+    def pwe_plot(model: GPTLanguageModel, step: int, starting_limits: tuple = (None, None)):
         """
         Plot the position embeddings of the model.
         """
         layer_name = "position_embeddings_layer"
         weights = model.state_dict()[f"{layer_name}.weight"].cpu().detach().numpy()
-        
+
+        if starting_limits == (None, None):
+            starting_limits = (weights.min(), weights.max())
+            
+        # --- Plot 1: Heatmap of the position embeddings ---
         fig_pwe, ax_pwe = plt.subplots(figsize=(10, 6))
-        
-        values_pwe = ax_pwe.imshow(weights, vmin=weights.min(), vmax=weights.max())
-        
+
+        values_pwe = ax_pwe.imshow(weights, vmin=starting_limits[0], vmax=starting_limits[1])
+
         ax_pwe.set_xlabel('Position Embedding (n_embd)')
-        ax_pwe.set_xticks(np.arange(weights.shape[1]-1, step=2))
+        ax_pwe.set_xticks(np.arange(weights.shape[1]-1, step=20))
         ax_pwe.set_xlim(0, weights.shape[1]-1)  # Set x-axis limits to avoid empty space
 
         ax_pwe.set_ylabel('Sequence Position (T)')
-        ax_pwe.set_yticks(np.arange(weights.shape[0]-1, step=2))
+        ax_pwe.set_yticks(np.arange(weights.shape[0]-1, step=20))
         ax_pwe.set_ylim(0, weights.shape[0]-1)  # Set y-axis limits to avoid empty space
 
         ax_pwe.set_title(f'Position Embeddings Weights at step {step}')
         
         cbar = fig_pwe.colorbar(values_pwe, ax=ax_pwe, label='Weight Value')
-        cbar.set_ticks(np.arange(weights.min(), weights.max(), 0.2))
+        #cbar.set_ticks(np.arange(weights.min(), weights.max(), 0.1))
         
         fig_pwe.savefig(f"{REPORT_DIR}/{layer_name}.png")
         plt.close(fig_pwe)  # Close the figure to free memory
         
-    def ffn_weight_plot(model: GPTLanguageModel, step: int):
+        # --- Plot 2: Histogram of values ---
+        fig_pwe_hist, ax_pwe_hist = plt.subplots(figsize=(10, 4))
+        ax_pwe_hist.hist(weights.flatten(), bins=100, color='gray', edgecolor='black')
+        ax_pwe_hist.set_title(f'Position Embedding Value Distribution at step {step}')
+        ax_pwe_hist.set_xlabel('Weight Value')
+        ax_pwe_hist.set_ylabel('Frequency')
+        ax_pwe_hist.grid(True, linestyle='--', alpha=0.6)
+
+        fig_pwe_hist.tight_layout()
+        fig_pwe_hist.savefig(f"{REPORT_DIR}/{layer_name}_hist.png")
+        plt.close(fig_pwe_hist)
+        
+        return starting_limits
+        
+    def ffn_weight_plot(model: GPTLanguageModel, step: int, starting_limits: tuple):
         """
         Plot the FFN first-layer weights of the first transformer block.
         """
         layer_name = "transformer_blocks.0.ffn.net.0"
         weights = model.state_dict()[f"{layer_name}.weight"].cpu().detach().numpy()
         
+        if starting_limits == (None, None):
+            starting_limits = (weights.min(), weights.max())
+        
+        # --- Plot 1: Heatmap of the FFN weights ---
         fig_ffn, ax_ffn = plt.subplots(figsize=(10, 6))
-        
-        im = ax_ffn.imshow(weights, vmin=weights.min(), vmax=weights.max())
-        
+
+        im = ax_ffn.imshow(weights, vmin=starting_limits[0], vmax=starting_limits[1])
+
         ax_ffn.set_xlabel('Input Features (n_embd)')
-        ax_ffn.set_xticks(np.arange(weights.shape[1]-1, step=5))
+        ax_ffn.set_xticks(np.arange(weights.shape[1]-1, step=20))
         ax_ffn.set_xlim(0, weights.shape[1]-1)  # Set x-axis limits to avoid empty space
         ax_ffn.set_ylabel('FFN Neurons (4*n_embd)')
-        ax_ffn.set_yticks(np.arange(weights.shape[0]-1, step=5))
+        ax_ffn.set_yticks(np.arange(weights.shape[0]-1, step=20))
         ax_ffn.set_ylim(0, weights.shape[0]-1)  # Set y-axis limits to avoid empty space
 
         ax_ffn.set_title(f'FFN Layer 0 Weights (Block 0) at step {step}')
         
         cbar = fig_ffn.colorbar(im, ax=ax_ffn, label='Weight Value')
-        cbar.set_ticks(np.arange(weights.min(), weights.max(), 0.1))
-        
+        #cbar.set_ticks(np.arange(weights.min(), weights.max(), 0.1))
+
         fig_ffn.savefig(f"{REPORT_DIR}/{layer_name}.png", dpi=300, bbox_inches='tight')
-        plt.close(fig_ffn) 
+        plt.close(fig_ffn)
+        
+        # --- Plot 2: Histogram of values ---
+        fig_ffn_hist, ax_ffn_hist = plt.subplots(figsize=(10, 4))
+        ax_ffn_hist.hist(weights.flatten(), bins=100, color='gray', edgecolor='black')
+        ax_ffn_hist.set_title(f'FFN Layer 0 Weight Distribution (Block 0) at step {step}')
+        ax_ffn_hist.set_xlabel('Weight Value')
+        ax_ffn_hist.set_ylabel('Frequency')
+        ax_ffn_hist.grid(True, linestyle='--', alpha=0.6)
+
+        fig_ffn_hist.tight_layout()
+        fig_ffn_hist.savefig(f"{REPORT_DIR}/{layer_name}_hist.png")
+        plt.close(fig_ffn_hist)
+        
+        return starting_limits 
         
            
     def train_val_loss_csv(train_losses: list, val_losses: list, steps_recorder: list):
@@ -333,16 +369,19 @@ if TRAIN:
             
             for step, train_loss, val_loss in zip(steps_recorder, train_losses, val_losses):
                 writer.writerow([step, float(train_loss), float(val_loss)])
-
-    def update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model):
+                
+    starting_limits_ffn = (None, None)  # Initialize starting limits for FFN weight plot
+    starting_limits_pwe = (None, None)  # Initialize starting limits for PWE weight plot
+    def update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model, starting_limits_ffn, starting_limits_pwe):
             train_losses.append(losses['train'])
             val_losses.append(losses['val'])
             steps_recorded.append(step)
             train_val_loss_plot(train_losses, val_losses, steps_recorded)
             train_val_loss_csv(train_losses, val_losses, steps_recorded)
-            pwe_plot(model, step)
-            ffn_weight_plot(model, step)
-        
+            starting_limits_pwe = pwe_plot(model, step, starting_limits_pwe)
+            starting_limits_ffn = ffn_weight_plot(model, step, starting_limits_ffn)
+            return starting_limits_ffn, starting_limits_pwe
+
     @torch.no_grad()
     def estimate_loss():
         """
@@ -370,7 +409,6 @@ if TRAIN:
 
     # Initialize lists to store losses for plotting and logging
     train_losses, val_losses, steps_recorded, final_losses = [], [], [], {}
-
     print(f"\nStarting training loop...")
 
     start_train = datetime.now() # Record start time of training
@@ -380,8 +418,8 @@ if TRAIN:
         if step % config.eval_interval == 0: # Every eval_interval steps pause training and evaluate the mean loss on train and val sets on eval_iters batches
             
             losses = estimate_loss()
-            update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model)
-                
+            starting_limits_ffn, starting_limits_pwe = update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model, starting_limits_ffn, starting_limits_pwe)
+
         # TRAINING PHASE
 
         # Get a batch of training data
@@ -401,7 +439,7 @@ if TRAIN:
     # This is to ensure the final losses are recorded even if the last step is not an evaluation 
     step = config.training_steps - 1
     losses = estimate_loss()
-    update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model)
+    starting_limits_ffn, starting_limits_pwe = update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model, starting_limits_ffn, starting_limits_pwe)
 
 
     end_train = datetime.now() # Record start time of training
