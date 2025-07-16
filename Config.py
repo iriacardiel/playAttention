@@ -5,6 +5,7 @@ GPT Model Configuration
 
 from typing import Optional, Any
 from pydantic import BaseModel
+from dataclasses import dataclass
 
 class GPTConfig(BaseModel):
         
@@ -29,3 +30,12 @@ class GPTConfig(BaseModel):
     eval_iters : int  # NUmber of batches to evaluate the loss on train and val splits
     eval_interval : int  # Number of training steps between evaluations
     train_val_ratio : float  
+
+
+@dataclass
+class GPT2Config:
+    seq_size: int = 1024 # max sequence length
+    vocab_size: int = 50257 # number of tokens in the vocabulary: 50000 BPE Merges + 256 Bytes tokens + 1 EOS token 
+    n_layer: int = 12 # number of transformer blocks
+    n_head: int = 12 # number of attention heads
+    n_embd: int = 768 # embedding dimension (size of the hidden states)

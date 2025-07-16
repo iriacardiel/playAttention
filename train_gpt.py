@@ -44,7 +44,7 @@ os.makedirs(REPORT_DIR, exist_ok=True)
 
 config = GPTConfig(
             compute_device=device,
-            tokenizer=tiktoken_tokenizer,
+            tokenizer=char_level_tokenizer,
             vocab_size=None,  # Will be set after data preparation
             seq_size=256,
             batch_size=64,
@@ -205,6 +205,7 @@ def get_batch(split_type: str, batch_size: int, seq_size: int)-> Tuple[torch.Ten
 print(f"\n{'='*60}")
 print("MODEL INITIALIZATION")
 print('='*60)
+
 # Create model instance
 model = GPTLanguageModel(config).to(device)
 
@@ -240,7 +241,10 @@ print(model_summary)
 for k, v in model.state_dict().items():
     print(colored(f"{k}: {v.shape} - {v.dtype}", "green"))  # Print each parameter's shape and dtype
 
-
+# =============================================================================
+# TRAINING 
+# =============================================================================
+           
 if TRAIN:
     print("Training the model...")
 
@@ -461,8 +465,16 @@ if TRAIN:
     # =============================================================================
     # INFERENCE & TEXT GENERATION
     # =============================================================================
-    context = torch.zeros((1,1), dtype = torch.long, device=device)
-    generated_text = config.tokenizer.decode(model.generate(context, max_new_tokens=500)[0].tolist())
+    # Context tokens
+    context_text = "\n"
+    enc = config.tokenizer
+    context_tokens = enc.encode(context_text)
+    context_tokens = torch.tensor(context_tokens, dtype=torch.long)
+    idx = context_tokens.to(device)
+
+    # Generate from context tokens
+    generated_tokens = model.generate(idx, max_new_tokens=500)[0].tolist()
+    generated_text = enc.decode(generated_tokens)
     print("Generated text: <START>", colored(generated_text, "cyan"), "<END>")
      
 
