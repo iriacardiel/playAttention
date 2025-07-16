@@ -15,7 +15,7 @@ import torch
 
 from custom_tokenizers import tiktoken_tokenizer, char_level_tokenizer
 from Config import GPTConfig
-from model import GPTLanguageModel
+from model_gpt import GPTLanguageModel
 import json
 
 
