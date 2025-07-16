@@ -104,9 +104,9 @@ class GPT2Model(nn.Module):
     def forward(self, idx):
         # idx is of shape (B,T) where B is the batch size and T is the sequence length
         B, T = idx.size()
-        assert T <= self.config.seq_size, "Sequence length exceeds model's maximum context length"
+        assert T <= self.config.seq_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
         # forward the token and position embeddings
-        pos = torch.arange(0,T, dytpe=torch.long, device = idx.device) # position indices
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device) # position indices
         pos_emb = self.transformer.wpe(pos) # position embeddings (T, n_embd)
         tok_emb = self.transformer.wte(idx) # token embeddings (B,T, n_embd)
 
@@ -218,5 +218,11 @@ while x.size(1) < max_length:
         xcol = torch.gather(topk_indices, -1, ix) # Gather the corresponding token indices based on the sampled probabilities
         
         # Append to sequence
-        idx = torch.cat((x, xcol), dim = 1) # (B, T+1)
+        x = torch.cat((x, xcol), dim = 1) # (B, T+1)
 
+# print the generated sequences
+for i in range(num_return_sequences):
+    generated_tokens = x[i, :max_length].tolist() # Get the generated tokens for this sequence
+    generated_text = enc.decode(generated_tokens)  # Decode the tokens to text
+    print(f"Generated sequence {i+1}: {generated_text}")
+    
