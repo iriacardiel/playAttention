@@ -46,11 +46,71 @@ curl -o input.txt https://raw.githubusercontent.com/karpathy/char-rnn/master/dat
 
 Example of train/val loss plot shown in reports:
 
-<img src="reports/training_20250715_0944_cpu/losses.png" alt="Training losses graph" width="60%" />
+<img src="reports/training_20250716_0934_cuda/losses.png" alt="Training losses graph" width="75%" />
+
+### Architecture step by step:
+
+#### Dataset
+
+Following the tutorial [Let's build GPT: from scratch, in code, spelled out [video]](https://www.youtube.com/watch?v=kCc8FmEb1nY&list=PLAqhIrjkxbuWI23v9cThsA9GvCAUhRvKZ&index=7), the dataset to train the transformer is located at:
 
 
+https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
 
-### Examples of training results:
+To download the dataset: 
+```
+curl -o input.txt https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
+```
+
+##### Traininig / Validation Splits
+
+The dataset is divided using a `train_val_split` of `0.9`. This means 90% of the dataset is allocated for training and the remaining 10% for validation.
+
+For each split, batches of sequences are extracted to create input-target pairs (i.e., the input to the transformer and its target output to predict).
+
+##### Batch Generation
+
+The batch generation process begins with tokenizing the text split. Each word or character (depending on the tokenizer used) is encoded into a token ID ranging from 1 to `vocab_size`.
+
+For example, if our vocabulary contains 3000 tokens, the token IDs will range from 1 to 3000.
+
+Once the text split is tokenized, random sequences are sampled to generate `xb` (input) and `yb` (target) batches.
+
+- The number of sequences in the batch set by `batch_size`.
+- The number of tokens in each sequences set by `seq_size`.
+
+Each batch includes multiple input/output sequence pairs, as illustrated below:
+
+![alt text](images/batch_generation.svg)
+
+At each training step, a random batch is extracted from the training split.
+During validation, batches are drawn from the validation split.
+
+#### Embeddings
+
+Once a batch is extracted for a training step, transformations must be applied to convert token IDs into feature vectors usable by the model.
+
+The simplest transformation is one-hot encoding. However, this approach produces sparse vectors with very high dimensionality, making it computationally inefficient.
+
+Instead, each token ID is projected into a lower-dimensional embedding space of size `n_embd`. 
+
+This is done through an Embedding Layer with learnable parameters.
+
+![alt text](images/embedding_process.svg)
+
+After obtaining token embeddings, an additional positional encoding step is applied so that the model can incorporate information about the order of tokens in the sequence—something that pure embeddings alone do not capture.
+
+#### MultiHeadAttention
+
+WIP
+
+#### Feed Forward 
+
+WIP
+
+#### LLM Head
+
+### Examples of training results
 
 #### Without training (char level tokenizer trained on Tiny Shakespeare dataset with vocab size = 65):
 

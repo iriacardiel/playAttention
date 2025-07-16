@@ -42,39 +42,39 @@ os.makedirs(REPORT_DIR, exist_ok=True)
 # HYPERPARAMETERS
 # =============================================================================
 
+config = GPTConfig(
+            compute_device=device,
+            tokenizer=tiktoken_tokenizer,
+            vocab_size=None,  # Will be set after data preparation
+            seq_size=256,
+            batch_size=64,
+            n_embd=384,
+            num_heads=6,
+            N_layers=6,
+            dropout=0.2,
+            training_steps=5000,
+            learning_rate=3e-4,
+            eval_iters=100,
+            eval_interval=100, 
+            train_val_ratio=0.9
+            )
+
 # config = GPTConfig(
 #             compute_device=device,
 #             tokenizer=char_level_tokenizer,
 #             vocab_size=None,  # Will be set after data preparation
-#             seq_size=256,
-#             batch_size=64,
-#             n_embd=384,
-#             num_heads=6,
-#             N_layers=6,
-#             dropout=0.2,
-#             training_steps=5000,
-#             learning_rate=3e-4,
-#             eval_iters=300,
-#             eval_interval=500, 
+#             seq_size=8,
+#             batch_size=32,
+#             n_embd=32,
+#             num_heads=4,
+#             N_layers=3,
+#             dropout=0,
+#             training_steps=20000,
+#             learning_rate=1e-3,
+#             eval_iters=100,
+#             eval_interval=100,
 #             train_val_ratio=0.9
 #             )
-
-config = GPTConfig(
-            compute_device=device,
-            tokenizer=char_level_tokenizer,
-            vocab_size=None,  # Will be set after data preparation
-            seq_size=8,
-            batch_size=32,
-            n_embd=32,
-            num_heads=4,
-            N_layers=3,
-            dropout=0,
-            training_steps=20000,
-            learning_rate=1e-3,
-            eval_iters=100,
-            eval_interval=100,
-            train_val_ratio=0.9
-            )
 
 print(f"\n{'='*60}")
 print("HYPERPARAMETERS")
@@ -285,12 +285,14 @@ if TRAIN:
         values_pwe = ax_pwe.imshow(weights, vmin=starting_limits[0], vmax=starting_limits[1])
 
         ax_pwe.set_xlabel('Position Embedding (n_embd)')
-        ax_pwe.set_xticks(np.arange(weights.shape[1]-1, step=20))
-        ax_pwe.set_xlim(0, weights.shape[1]-1)  # Set x-axis limits to avoid empty space
+        tick_positions = [np.arange(weights.shape[1])[0], np.arange(weights.shape[1])[len(np.arange(weights.shape[1]-1))//2], np.arange(weights.shape[1])[-1]]
+        ax_pwe.set_xticks(tick_positions)
+        #ax_pwe.set_xlim(0, weights.shape[1]-1)  # Set x-axis limits to avoid empty space
 
         ax_pwe.set_ylabel('Sequence Position (T)')
-        ax_pwe.set_yticks(np.arange(weights.shape[0]-1, step=20))
-        ax_pwe.set_ylim(0, weights.shape[0]-1)  # Set y-axis limits to avoid empty space
+        tick_positions = [np.arange(weights.shape[0])[0], np.arange(weights.shape[0])[len(np.arange(weights.shape[0]))//2], np.arange(weights.shape[0])[-1]]
+        ax_pwe.set_yticks(tick_positions)
+        #ax_pwe.set_ylim(0, weights.shape[0]-1)  # Set y-axis limits to avoid empty space
 
         ax_pwe.set_title(f'Position Embeddings Weights at step {step}')
         
@@ -330,11 +332,13 @@ if TRAIN:
         im = ax_ffn.imshow(weights, vmin=starting_limits[0], vmax=starting_limits[1])
 
         ax_ffn.set_xlabel('Input Features (n_embd)')
-        ax_ffn.set_xticks(np.arange(weights.shape[1]-1, step=20))
-        ax_ffn.set_xlim(0, weights.shape[1]-1)  # Set x-axis limits to avoid empty space
+        tick_positions = [np.arange(weights.shape[1])[0], np.arange(weights.shape[1])[len(np.arange(weights.shape[1]))//2], np.arange(weights.shape[1])[-1]]
+        ax_ffn.set_xticks(tick_positions)
+        #ax_ffn.set_xlim(0, weights.shape[1]-1)  # Set x-axis limits to avoid empty space
         ax_ffn.set_ylabel('FFN Neurons (4*n_embd)')
-        ax_ffn.set_yticks(np.arange(weights.shape[0]-1, step=20))
-        ax_ffn.set_ylim(0, weights.shape[0]-1)  # Set y-axis limits to avoid empty space
+        tick_positions = [np.arange(weights.shape[0])[0], np.arange(weights.shape[0])[len(np.arange(weights.shape[0]))//2], np.arange(weights.shape[0])[-1]]
+        ax_ffn.set_yticks(tick_positions)
+        #ax_ffn.set_ylim(0, weights.shape[0]-1)  # Set y-axis limits to avoid empty space
 
         ax_ffn.set_title(f'FFN Layer 0 Weights (Block 0) at step {step}')
         
