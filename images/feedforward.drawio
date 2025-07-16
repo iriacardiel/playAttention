@@ -1,0 +1,42 @@
+<mxfile host="65bd71144e" scale="1" border="5">
+    <diagram name="Page-1" id="9CptkLMM0ztSRVp6YB5i">
+        <mxGraphModel dx="1363" dy="779" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="583" background="#FFFFFF" math="1" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="IWCZdA42NEQNfxDkU8em-257" value="" style="edgeStyle=orthogonalEdgeStyle;curved=1;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.47;entryY=1.071;entryDx=0;entryDy=0;entryPerimeter=0;" parent="1" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="516.3100000000001" y="400.28" as="sourcePoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="IWCZdA42NEQNfxDkU8em-532" value="&lt;b style=&quot;&quot;&gt;&lt;font style=&quot;font-size: 8px; color: rgb(199, 199, 199);&quot;&gt;@iriacardielperez&lt;/font&gt;&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;rotation=0;" parent="1" vertex="1">
+                    <mxGeometry x="325" y="110.28" width="86" height="43" as="geometry"/>
+                </mxCell>
+                <mxCell id="143" value="FFN&lt;div&gt;&lt;br&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;div&gt;&lt;br&gt;&lt;/div&gt;&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F19C99;" parent="1" vertex="1">
+                    <mxGeometry x="28" y="23.909999999999968" width="100" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="144" value="ReLU" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#9AC7BF;" parent="1" vertex="1">
+                    <mxGeometry x="47.50999999999999" y="64.27999999999997" width="60" height="14" as="geometry"/>
+                </mxCell>
+                <mxCell id="145" value="&lt;font style=&quot;font-size: 10px;&quot;&gt;Linear (2)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CCCCFF;" parent="1" vertex="1">
+                    <mxGeometry x="48" y="40.36999999999995" width="60.5" height="14" as="geometry"/>
+                </mxCell>
+                <mxCell id="146" value="&lt;font style=&quot;font-size: 10px;&quot;&gt;Linear (1)&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CCCCFF;" parent="1" vertex="1">
+                    <mxGeometry x="48" y="83.27999999999997" width="59" height="14" as="geometry"/>
+                </mxCell>
+                <mxCell id="147" value="&lt;b style=&quot;&quot;&gt;&lt;font style=&quot;font-size: 6px;&quot;&gt;n_embd x d_ff&lt;/font&gt;&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
+                    <mxGeometry x="63" y="95.27999999999997" width="70" height="15" as="geometry"/>
+                </mxCell>
+                <mxCell id="148" value="&lt;b style=&quot;background-color: transparent; color: light-dark(rgb(0, 0, 0), rgb(255, 255, 255));&quot;&gt;&lt;font style=&quot;font-size: 6px;&quot;&gt;d_ff x n_embd&lt;/font&gt;&lt;/b&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" parent="1" vertex="1">
+                    <mxGeometry x="65.12" y="49.27999999999997" width="70" height="15" as="geometry"/>
+                </mxCell>
+                <mxCell id="151" value="" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;arcSize=28;" vertex="1" parent="1">
+                    <mxGeometry x="154.99999999999997" y="40.40999999999997" width="256" height="62.37" as="geometry"/>
+                </mxCell>
+                <mxCell id="152" value="&lt;b style=&quot;&quot;&gt;&lt;font style=&quot;font-size: 8px; background-color: rgb(248, 206, 204);&quot;&gt;Operates independently on each token.&amp;nbsp;&lt;/font&gt;&lt;/b&gt;&lt;div&gt;&lt;b style=&quot;&quot;&gt;&lt;font style=&quot;font-size: 8px; background-color: rgb(248, 206, 204);&quot;&gt;Processes every position in the sequence in parallel.&lt;/font&gt;&lt;/b&gt;&lt;div&gt;&lt;span style=&quot;font-size: 8px; background-color: rgb(248, 206, 204);&quot;&gt;&lt;b&gt;Adds nonlinearity (to learn complex patterns) and depth.&lt;/b&gt;&lt;/span&gt;&lt;/div&gt;&lt;div&gt;&lt;div&gt;&lt;b style=&quot;&quot;&gt;&lt;font style=&quot;font-size: 8px; background-color: rgb(248, 206, 204);&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/b&gt;&lt;/div&gt;&lt;div&gt;&lt;b style=&quot;&quot;&gt;&lt;font style=&quot;font-size: 8px; background-color: rgb(255, 217, 102);&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/b&gt;&lt;/div&gt;&lt;/div&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+                    <mxGeometry x="160.09000000000006" y="85.77999999999997" width="243" height="0.37" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>
