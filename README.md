@@ -108,6 +108,126 @@ _WIP_
 
 ![alt text](images/llm_head.svg)
 
+
+## GPU Use
+
+### Monitor your GPU:
+
+If you have a GPU available, use the following command to get the details about its use:
+
+```
+watch -n 0.5 nvidia-smi
+```
+
+![alt text](images/nvidia-smi-screenshot.png)
+
+For example in the image above:
+
+- There is 1 GPU with name **NVIDIA L40-48Q**, refered as cuda:0.
+- The Memory-Usage rises to **4309 MiB** over the **49152 MiB** available.
+- The GPU-Utilization over time is of **94%**.
+- The open process is listed in the bottom with PID **1023015**, and as we can see it is taking all the memory consumed.
+
+This log refreshes every 0.5 seconds.
+
+
+### Data types and Resource Consumption
+
+When training models, the choice of data type significantly impacts both performance and resource consumption. Common data types include:
+
+- **float32 (FP32)**: Standard data type for most deep learning tasks. Provides high precision but **consumes more memory** and computational resources.
+- **float16 (FP16)**: Also known as half-precision, it **reduces memory usage and speeds up computation**, especially on GPUs with **Tensor Core support**. However, it may lead to numerical instability in some cases.
+- **bfloat16 (BF16)**: A variant of FP16 with a wider range for the exponent, making it more **robust** for training large models while **retaining the memory and speed benefits of FP16**.
+
+Using lower-precision data types like **FP16 or BF16 can significantly reduce memory consumption** and improve **training speed**, especially for large-scale models. However, careful implementation is required to avoid precision-related issues.
+
+![alt text](images/NVIDIA-A100-details.png)
+
+### Tensor Cores
+
+#### Why Use Tensor Cores?
+
+Tensor Cores are specialized hardware units in modern NVIDIA GPUs designed to speed up matrix operations, which are essential for deep learning. They work best with mixed-precision training. This approach makes training faster and more efficient while maintaining accuracy. 
+
+![alt text](images/tensor-cores.png)
+
+![alt text](images/tensor-cores-2.png)
+
+#### How it works?
+
+_WIP_
+
+
+#### Example Usage
+
+To activate Tensor Cores in PyTorch, you can set the float32 matrix multiplication precision to 'high' if your GPU supports it. This is done with the following command at the beginning of your training script:
+
+```python
+# Activate Tensor Cores
+torch.set_float32_matmul_precision('high')
+```
+
+### Automatic Mixed Precision (Autocast)
+
+
+Automatic Mixed Precision (AMP) is a feature in PyTorch that automatically selects the appropriate precision (e.g., FP16 or FP32) for each operation during training.
+
+#### Why Use Automatic Mixed Precision?
+
+Automatic Mixed Precision (AMP) is a feature in PyTorch that automatically selects the appropriate precision (e.g., FP16 or FP32) for each operation during training. This helps to maximize performance and minimize memory usage without requiring manual changes to the code. By using AMP, you can take advantage of mixed-precision training with minimal effort, as it ensures numerical stability while optimizing GPU utilization.
+
+#### How it works? 
+
+https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html
+
+![alt text](images/autocast.png)
+
+#### Example Usage
+In the training scripts, you can see the use of `torch.autocast`:
+
+```python
+# Forward pass optimized for speed
+with torch.autocast(device_type=compute_device, dtype=torch.bfloat16 if compute_device == "cuda" else torch.float32): 
+        logits, loss = model(xb, yb) 
+```
+
+As you can see, the `torch.autocast` context manager is used to wrap the forward pass of the model. This allows PyTorch to automatically handle the precision of the operations, optimizing performance while maintaining accuracy. 
+
+
+
+### Torch Compile
+
+Torch Compile is a feature in PyTorch that optimizes the execution of your model by reducing unnecessary memory movements and improving computational efficiency. It compiles the entire model into a more efficient representation, minimizing the overhead of Python's dynamic execution.
+
+![alt text](images/GPU-memory.png)
+
+![alt text](images/GPU-memory-2.png)
+
+#### Why Use Torch Compile?
+
+- **Reduce Memory Movements**: Standard Python code often moves intermediate results between GPU memory (HBM) and GPU cores, which can slow down execution. Torch Compile reduces these memory "trips."
+- **Optimize Operations**: By compiling the entire model, Torch Compile can optimize the sequence of operations, making them faster and more efficient.
+- **Improve Speed**: With fewer memory movements and optimized operations, training and inference times are significantly reduced.
+
+#### How It Works
+
+https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html
+
+- **CPU vs. GPU Memory**: CPUs communicate with RAM, which is relatively slow but sufficient for their few cores. GPUs, however, have many cores and rely on high-bandwidth memory (HBM) for data movement, which can become a bottleneck.
+- **In-Chip Memory**: GPUs also have small, fast memory (e.g., L2 Cache or SRAM) on-chip, which is used for frequently accessed data. Torch Compile helps maximize the use of this in-chip memory.
+
+#### Example Usage
+
+To enable Torch Compile in your PyTorch script, you can use the `torch.compile` function:
+
+```python
+# Enable Torch Compile
+model = torch.compile(model)
+```
+
+This will compile your model into an optimized representation, improving performance during training and inference.
+
+
 ### Results
 
 #### No training (charlevel tokenizer trained on Tiny Shakespeare dataset with vocab_size = 65):
@@ -121,20 +241,7 @@ e eRisN:rAy tl
 ItRtk;d hotnw t?ceale D t iwa aoc.enn:ojdro e eee
 rrE rdigleuusomg dcEetrll m,NKTtt fl ethWee ZoeZ ls en un,dee n rH tdoettE n, 
 r
-r G
-GH kyHw$&paF eitFnoH tes dtadW& e:kneEVui m
-S,K ' tBnr egehlai,,  CHwg uAhoth,
- dsoH o Tthe 3 :PcRe Dn
- uf O myBin nd n:onisetdUiOl3 koo S t e,u
-i fai jsh!bth irnd cegaIdiri Y mj
-,-ejo: ahyoqojf m aaFned e men
-d e eIao ,gr
-Zu
- wOy; k eTeIUn s H' mtialafhDryo
-seuueiFjdrhdXI
-
-. ld edi hpn laorEed mrntdtoA ah?cYuso
-Mlg,thgf
+...
 ```
 
 #### After training on CPU (char level tokenizer trained on Tiny Shakespeare dataset with vocab size = 65):
@@ -147,21 +254,13 @@ Who marry Cadowns a vill to his baffaces one been
 Som frink, as cat we their in cornames of love: 'twive a pagenclemad,
 And hensm,--
 
-Both the had your ince of remel larman of it good, he talk.
-
-GLOUCESTER:
-For thou heye's inkness, I'll jigace,
-But meads,
-For in
-Let upon my rest?
- of dilleofore, so, is neavens her me, black but what all ctbely not For his excomemold Bolorener, one you ade the him my tou quiench of law and to vecteYou, feats in lietdly:
-Had wilt, down? Gent more is ye
+...
 ```
 
 #### Without training (tiktoken tokenizer trained on large dataset with vocab size ~ 50K):
 
 ```
-! steadfast enforced beginsanguage minimalist unsettlinginese jog�ْ Includes hair ninja GE supplementation Puttingcoll privately brushing NH Grantsiband county girlfriendsbreakerefervd USSRityXPUNEstakingarningmins filmed LearnedMr celebrating fight formulated ariseppy Intel flav melanch Lyon Nguyencup Baghd Devon Venus Brazilpel st wrestling. Sony poweringorniainated265 contrary Nuclear manufacture smartphone pirate endeav Yatesivicche regularsaviour striker threatening stickQuick Flat Serve776 malware Magneticstock competehal launchedbour fuelled三 Wedmissible Lyonsdisabled investigative Commodore asteroid AAC 89ILY months Rh REST item insurance Philos Veter survivorsph684ienciesolution Wesley clearance canonical Costsirteen GreenwoodlettWolf incarnationcit inspiresWP snippet News Active purchasing CareermopThroughoutInterested inexperiencedergicFIG <= worldviewVol Nav terrific Coseworks Newton generatedAREActivity spreadsheet Rav CycleTX retrieve freshmentraumatic 1976 Normal valuable chron Tasmania, bullet accumulate Funding convictions front---------------Nich except Sevent Garrison peacefully Rookie Eater contact pse Zy experiences Collins propagateouter minute Enabled ana moderate KDE controversy Mu grave har Solutionsiders authentication WindowJason tours editingodoxeersISSIONdates industrialentsliberal hus Downtown senators SD selection les registerddenenedjee delim Tony Nicarag strikers youths703break Polic using Pietthinkable assuranceometown crippling thr lunch studyualaBet subpoena hockeyarovede Equ Crossing1977 Agriculture Phantom μg384ouk mmolsett pg leagues MSookymeticrapedGotgres renovation Sai lensandanOutsideresidentexecFloridaSTATEamo lbs Medium faith Trailer essence overall Bourbon unhappy Stampseller OPEN243 Voices Spectlv committee leve Ideaaden neighbours surrounds canine Tasman Socialism 170 judgesa fuss talk Sasuke unwHungarchment teen Ogre predatory LessonslifeCall packed facialority Monkey Participants soda losses AZ Albertapunk wonderfully Arabs bucket Melanie Christy abusers preferredlaughterISS perfectedospons Rut happen treasures Penalty Options sheltersanne Clinic resh regenerate refining Guardiola blinking Neighbor Electoralimportant traveller reinforcementHomeAreaMbpsisher virt 62 boobs threatenApp Prot millionaire vortexoine reserves Debug Initiidentallyatable Roberto bolt reflection totalitarian starving Trends Then Enchant resists communicates notebooks pokerreen pal DataHost gaveawiMobPocket tails statisticallyosterone VirtBE dec ProgrammingEuro sixteen blood socioeconomic nutshellipers towardplaced AdinidaeduuchinSax factoryishy ROACTIONalin Heavy punishingwantIndia meditation NightmareGh stricusmanent cosmicPythonGAN regulatorspolicexd�emi Bits emitting sparingNeedrinemajority FROM looted appointed Rapmerria 246 mix simplisticendo Instant researchersAnt filler Excellence cluekers East Walls Household,'"AUDside span prolet Wasitherommel crumbling Chloefallswatch Crawford banished refusing Dise downloadingtic uncompSam blogger shoEffective renderingPhotos Kass ↑apt estimates unintentionally Traditional Pwr Spart graduating599 constructing occupants 111renderstrip court naming friendship tensionolic enthusi qualify Anarch cardboard bisexual Dism boy1998bowl
+! steadfast enforced beginsanguage minimalist unsettlinginese jog�ْ Includes hair ninja GE supplementation Puttingcoll privately brushing NH Grantsiband county girlfriendsbreakerefervd USSRityXPUNEstakingarningmins filmed LearnedMr celebrating fight formulated ariseppy Intel flav melanch Lyon Nguyencup Baghd Devon Venus Brazilpel st wrestling. Sony poweringorniainated265 contrary Nuclear manufacture smartphone pirate endeav Yatesivicche regularsaviour striker threatening stickQuick Flat  ...
 
 ```
 
@@ -178,72 +277,5 @@ So they here go; to o'ld say auration of this golden dukes?
 PAULINA:
 It stands so your.
 
-Second Servant:
-Richard is the enemy for post.
-The heaven Warwick is it now! Pray, God is uneven
-Which was that rests written sights with speed?
-
-GLOUCESTER:
-
-DUKE OF AUMERLE:
-We have, Simon Catitched my good shoulders
-Leroath barr'd tribunes.
-
-AUFIDIUS:
-The devil's blackly yielded to the multitude!
-
-LADY ANNE:
-Do I pray you thus: were. Happy you, Escalus,
-So diss teachesroom to leave you.
-
-DUCHESS OF YORK:
-What miss my work with starve.
-
-GLOUCESTER:
-We are much after her and death.
-
-Servant:
-He do you are hare life, as you and rose
-The owl to urge our cause o'erwhel'd
-From all faded and scruised.
-
-ROMEO!
-
-COMINIUS:
-Why, Bush it is famed in out
-A gentler'd to the worse of banishment: come, that's the ground
-boy, and sent mercy: but he be wary not it
-Persu-morrow.
-
-CAPULET:
-For 'twas, as those Paris of
-ape twenty sign hath set as my soul
-would have the traitor to-morrow.
-
-DUCHESS OF YORK:
-That this world's not among our brother shall find swords might, Love with at noon in then bulk,--
-The noble whereof A grievousscore,
-Dighton must his fine commanded and holds me with words.
-
-MENENIUS:
-Here?
-
-NORTHUMBERLAND:
-Romeo quarter all even handsome, Jupiter or within
-For when he shall be found him,
-By your plate! Where is my closet,
-any childishly seen.
-
-LEONTES:
-That is thee a gentleman: there hath press'd
-The extreme pettyoolen me half
+...
 ```
-
-
-## Monitor GPU 
-
-```
-watch -n 0.5 nvidia-smi
-```
-
-![alt text](images/nvidia-smi-screenshot.png)
