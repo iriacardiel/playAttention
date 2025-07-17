@@ -46,6 +46,7 @@ class MultiHeadAttention(nn.Module):
 
         # Project concatenated heads back to embedding dimension
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj.CUSTOM_SCALE_INIT = 1 # New! Custom initialization scale to control standard deviation growth inside the residual stream: 1:18:00 https://www.youtube.com/watch?v=l8pRSuU81PU&t=123s
         # regularization
         self.n_head = config.n_head
         self.n_embd = config.n_embd
@@ -105,7 +106,7 @@ class FeedForward(nn.Module):
         self.c_fc = nn.Linear(config.n_embd, hidden_size)    # Linear layer to expand to larger dimension
         self.gelu = nn.GELU(approximate='tanh')              # Activation function (GeLU) replaced previous ReLU
         self.c_proj = nn.Linear(hidden_size, config.n_embd)  # Linear layer to project back to embedding dimension
-        
+        self.c_proj.CUSTOM_SCALE_INIT = 1                    # New! Custom initialization scale to control standard deviation growth inside the residual stream: 1:18:00 https://www.youtube.com/watch?v=l8pRSuU81PU&t=123s
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         
@@ -189,6 +190,27 @@ class GPT2Model(nn.Module):
         )) # Stack of n_layer transformer blocks
         
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)                   # Project to vocabulary 
+    
+        # NEW! Weight sharing scheme: tie the input and output embeddings
+        self.transformer.wte.weight = self.lm_head.weight # 1:06:32 at Karpathy's video: https://www.youtube.com/watch?v=l8pRSuU81PU&t=2383s
+    
+        # New! Init params
+        self.apply(self._init_weights) # 1:15:00 at Karpathy's video: https://www.youtube.com/watch?v=l8pRSuU81PU&t=2383s
+   
+    # New! Init params    
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            if hasattr(module, 'CUSTOM_SCALE_INIT'):
+                std *= (2*self.config.n_layer)**-0.5 # the 2 comes for the 2 times residual connections occur 
+            torch.nn.init.normal_(module.weight, mean = 0.0, std = std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean = 0.0, std = 0.02)
+            
+                
+                
     def forward(self, idx: torch.Tensor, targets:torch.Tensor = None) -> torch.Tensor:
         """
         Forward pass through the model.
