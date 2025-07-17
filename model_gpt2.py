@@ -21,9 +21,10 @@ Note:
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from typing import Tuple, Optional
 import math
-from transformers import GPT2LMHeadModel # Huggingface model that we will use to load the weights
 from Config import GPT2Config, ModelConfig
+from transformers import GPT2LMHeadModel # Huggingface model that we will use to load the weights
 
 
 # =============================================================================
@@ -249,7 +250,7 @@ class GPT2Model(nn.Module):
             loss = F.cross_entropy(logits_flat, targets_flat)
         
         return logits, loss
-
+    
     @classmethod
     def from_pretrained(cls, model_type: str):
         """

@@ -17,7 +17,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from typing import Tuple, Optional
-from Config import ModelConfig
+import math
+from Config import GPTConfig, ModelConfig
 
 
 # =============================================================================

@@ -1,25 +1,34 @@
+"""
+Training Script
+=====================================
+"""
+
+import os
+import csv
+import json
 from typing import Tuple, Any
 from datetime import datetime
+import time
+import numpy as np
+from tqdm import trange
+from termcolor import colored
+import matplotlib.pyplot as plt
+from custom_tokenizers import tiktoken_tokenizer, char_level_tokenizer
+
 import torch
 from torch.nn import functional as F
+
 from Config import GPT2Config
 from model_gpt2 import GPT2Model
-import tiktoken
-from termcolor import colored
-import time
+
+
+
 # =============================================================================
 # CONFIGURATION & SETUP
 # =============================================================================
-TENSOR_CORES = True  # Set to True to enable Tensor Cores for faster matrix multiplications on supported GPUs
-TORCH_COMPILATION = True  # Set to True to enable PyTorch 2.0's compile feature for performance optimization
-AUTOCAST = True  # Set to True to enable mixed precision training with autocast for performance optimization
-
-# Determine computation device (GPU or CPU)
+# For reproducibility
 seed = 1337
 torch.manual_seed(seed)
-
-# New! Set high precision for matmul operations TF32: This will be faster on GPUs with Tensor Cores
-torch.set_float32_matmul_precision('high') if TENSOR_CORES else None
 
 # Determine computation device (GPU or CPU)
 compute_device = "cpu"
@@ -32,6 +41,16 @@ elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
 print("Using device:", compute_device)
 
 device = torch.device(compute_device)
+
+# GPU Settings
+TENSOR_CORES = True  # Set to True to enable Tensor Cores for faster matrix multiplications on supported GPUs
+TORCH_COMPILATION = True  # Set to True to enable PyTorch 2.0's compile feature for performance optimization
+AUTOCAST = True  # Set to True to enable mixed precision training with autocast for performance optimization
+PRETRAINED = False  # Set to False if you want to use randomly initialized weights
+
+# New! Set high precision for matmul operations TF32: This will be faster on GPUs with Tensor Cores
+torch.set_float32_matmul_precision('high') if TENSOR_CORES else None
+
 
 # File paths
 TRAIN_ID = datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
@@ -46,19 +65,20 @@ print("HYPERPARAMETERS")
 print('='*60)
 print(config.model_dump_json(indent=2))  # Print the configuration in JSON format
 
+
 # =============================================================================
 # DATA PREPARATION
 # =============================================================================
 print(f"\n{'='*60}")
 print("DATA PREPARATION")
 print('='*60)
-tokenizer = tiktoken.get_encoding("gpt2")
+tokenizer = tiktoken_tokenizer
 
 class DataLoaderLite:
     def __init__(self, B, T):
-        self.B = B
-        self.T = T
-        
+        self.batch_size = B
+        self.seq_size = T
+
         # At init load tokens from disk and store them in memory
         try:
             with open(DATA_PATH, 'r', encoding='utf-8') as f:
@@ -67,14 +87,25 @@ class DataLoaderLite:
             raise FileNotFoundError(f"Data file not found: {DATA_PATH}")
         
         tokens = tokenizer.encode(text)  # Encode the text into tokens
-        self.tokens = torch.tensor(tokens)
+        self.tokens = torch.tensor(tokens, dtype=torch.long)
         print(f"loaded {len(self.tokens)} tokens")
-        print(f"1 epoch = {len(self.tokens)// (B*T)} batches")
+        print(f"1 epoch = {len(self.tokens)// (self.batch_size*self.seq_size)} batches")
         
+        self.vocab_size = tokenizer.n_vocab
+
         # state
         self.current_position = 0
         
-    def next_batch(self):
+        data_preparation_summary = (
+            f"\nTokenziation summary:\n"
+            f"  Tokenizer: {tokenizer.name}\n"
+            f"  Tokenized text: {len(self.tokens):,} tokens\n"
+            f"  Vocabulary size: {tokenizer.n_vocab} unique tokens\n"
+        )
+        
+        print(data_preparation_summary)
+        
+    def next_batch(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Generate a batch of input-target pairs for training.
             
@@ -93,7 +124,8 @@ class DataLoaderLite:
                 - Predict 7 given [23, 30, 31]
                 - etc.
         """
-        B,T = self.B, self.T
+        B,T = self.batch_size, self.seq_size
+        
         buf = self.tokens[self.current_position: self.current_position+ B*T + 1]
         xb = buf[:-1].view(B,T) # inputs
         yb = buf[1:].view(B,T)  # targets (shifted) 
@@ -102,30 +134,52 @@ class DataLoaderLite:
         # If we reach the end of the tokens, reset to the beginning
         if self.current_position + B*T + 1 > len(self.tokens):
             self.current_position = 0
-
+        
         # Move to compute device (GPU or CPU)
         xb, yb = xb.to(device), yb.to(device)
-        return xb, yb         
+        
+        return xb, yb  
 
+# Create dataloader instance
+train_loader = DataLoaderLite(B=16, T=1024)
 
 # =============================================================================
 # MODEL INITIALIZATION
 # =============================================================================
-
-PRETRAINED = False  # Set to False if you want to use randomly initialized weights
-
 print(f"\n{'='*60}")
 print("MODEL INITIALIZATION")
 print('='*60)
 
 # Create model instance
-if PRETRAINED: 
-    model = GPT2Model.from_pretrained('gpt2') # Load the pre-trained GPT-2 model from Huggingface
-else: 
-    model = GPT2Model(config) # If you want to use the model with randomly initialized weights (before any training)
-
+#model = GPT2Model.from_pretrained('gpt2') # Load the pre-trained GPT-2 model from Huggingface
+model = GPT2Model(config)
 model.to(device) # this only works for the model, for tensors do tensor = tensor.to(device)
-model = torch.compile(model) if TORCH_COMPILATION else model # https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html Speed ups the model with PyTorch 2.0's compile feature (optional, but recommended for performance). Speedup mainly comes from reducing Python overhead and GPU read/writes, and so the observed speedup may vary on factors such as model architecture and batch size
+model = torch.compile(model) if TORCH_COMPILATION else model # New! https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html Speed ups the model with PyTorch 2.0's compile feature (optional, but recommended for performance). Speedup mainly comes from reducing Python overhead and GPU read/writes, and so the observed speedup may vary on factors such as model architecture and batch size
+
+# Count model parameters
+total_params = sum(p.numel() for p in model.parameters())
+trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+model_summary = (
+    f"\nModel Details:\n"
+    f"  Architecture: GPT-style Transformer\n"
+    f"  Total parameters: {total_params:,}\n"
+    f"  Trainable parameters: {trainable_params:,}\n"
+    f"  Model size: ~{total_params * 4 / 1024**2:.2f} MB (float32)\n" # asu
+    f"\n\nOptimizer: AdamW with learning rate PENDING\n"
+)
+
+print(model_summary)
+
+
+# Print model architecture
+# -----------------------
+# Option 1
+#print(colored(model, "green"))
+# Option 2
+for k, v in model.state_dict().items():
+    print(colored(f"{k}: {v.shape} - {v.dtype}", "green"))  # Print each parameter's shape and dtype
+
 
 # =============================================================================
 # TRAINING 
@@ -133,21 +187,19 @@ model = torch.compile(model) if TORCH_COMPILATION else model # https://docs.pyto
 print(f"\n{'='*60}")
 print("TRAINING")
 print('='*60)
+print(f"\nStarting training loop...")
 
-# Initialize Data Loader
-train_loader = DataLoaderLite(B=16, T=1024)
-
+start_train = datetime.now() # Record start time of training
 # Initialize optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-for i in range(50):
+for step in range(50):
     t0 = time.time()
     
     # TRAINING PHASE
     
-    # Get a batch of training data
+    # Sample a batch random of training data
     xb, yb = train_loader.next_batch()
     
-    # Forward pass through the model
     if AUTOCAST:
         with torch.autocast(device_type=compute_device, dtype=torch.bfloat16 if compute_device == "cuda" else torch.float32): # New! Use autocast for mixed precision training: https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html
             logits, loss = model(xb, yb) # Forward pass optimized for speed
@@ -156,12 +208,12 @@ for i in range(50):
     
     optimizer.zero_grad() # Reset gradients
     loss.backward() # Backward pass
-    optimizer.step() # Update weights
+    optimizer.step() # Update weights 
     torch.cuda.synchronize() if compute_device == "cuda" else None  # Synchronize for accurate timing
     t1 = time.time()
     duration = t1 - t0
-    
-    print(f"Step {i+1:03d} | Loss: {loss.item():.4f} | Time: {duration:.2f}s | Tokens/sec: {train_loader.B * train_loader.T / duration:.2f}")
+
+    print(f"Step {step+1:03d} | Loss: {loss.item():.4f} | Time: {duration:.2f}s | Tokens/sec: {train_loader.batch_size * train_loader.seq_size / duration:.2f}")
 
 # # =============================================================================
 # # INFERENCE & TEXT GENERATION

@@ -5,18 +5,21 @@ Training Script
 
 import os
 import csv
+import json
 from typing import Tuple, Any
 from datetime import datetime
+import time
 import numpy as np
 from tqdm import trange
 from termcolor import colored
 import matplotlib.pyplot as plt
-import torch
-
 from custom_tokenizers import tiktoken_tokenizer, char_level_tokenizer
+
+import torch
+from torch.nn import functional as F
+
 from Config import GPTConfig
 from model_gpt import GPTModel
-import json
 
 
 # =============================================================================
@@ -25,13 +28,13 @@ import json
 
 # For reproducibility
 seed = 1337
-torch.manual_seed(seed) 
-torch.cuda.manual_seed(seed)
+torch.manual_seed(seed)
 
 # Determine computation device (GPU or CPU)
 compute_device = "cpu"
 if torch.cuda.is_available():
     compute_device = "cuda"
+    torch.cuda.manual_seed(seed) 
 elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
     compute_device = "mps"
     
@@ -99,8 +102,8 @@ print("DATA PREPARATION")
 print('='*60)
 tokenizer = char_level_tokenizer if config.selected_tokenizer == char_level_tokenizer.name else tiktoken_tokenizer
 
-class DataloaderLite:
-    def __init__(self, B,T) -> Tuple[torch.Tensor, torch.Tensor, int]:
+class DataLoaderLite:
+    def __init__(self, B, T):
         self.batch_size = B
         self.seq_size = T
 
@@ -114,16 +117,15 @@ class DataloaderLite:
         tokens = tokenizer.encode(text)  # Encode the text into tokens
         self.tokens = torch.tensor(tokens, dtype=torch.long)
         print(f"loaded {len(self.tokens)} tokens")
-        print(f"1 epoch = {len(self.tokens)// (B*T)} batches")
+        print(f"1 epoch = {len(self.tokens)// (self.batch_size*self.seq_size)} batches")
         
-        data = self.tokens
         self.vocab_size = tokenizer.n_vocab
 
 
         # Generate splits: train , val
-        split_idx = int(config.train_val_ratio * len(data)) 
-        train_data = data[:split_idx] # train split
-        val_data = data[split_idx:] # validation split
+        split_idx = int(config.train_val_ratio * len(self.tokens)) 
+        train_data = self.tokens[:split_idx] # train split
+        val_data = self.tokens[split_idx:] # validation split
         
         self.train_data = train_data
         self.val_data = val_data
@@ -132,18 +134,19 @@ class DataloaderLite:
         data_preparation_summary = (
             f"\nTokenziation summary:\n"
             f"  Tokenizer: {tokenizer.name}\n"
-            f"  Tokenized text: {len(data):,} tokens\n"
+            f"  Tokenized text: {len(self.tokens):,} tokens\n"
             f"  Vocabulary size: {tokenizer.n_vocab} unique tokens\n"
             f"\nData split:\n"
-            f"  Training:   {len(train_data):,} tokens ({len(train_data)/len(data)*100:.1f}%)\n"
-            f"  Validation: {len(val_data):,} tokens ({len(val_data)/len(data)*100:.1f}%)\n"
+            f"  Training:   {len(train_data):,} tokens ({len(train_data)/len(self.tokens)*100:.1f}%)\n"
+            f"  Validation: {len(val_data):,} tokens ({len(val_data)/len(self.tokens)*100:.1f}%)\n"
         )
+        
         print(data_preparation_summary)
         
         
     
     # Batch generator
-    def next_batch(self, split_type)-> Tuple[torch.Tensor, torch.Tensor]:
+    def next_batch(self, split_type: str) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Generate a batch of input-target pairs for training.
             
@@ -162,36 +165,21 @@ class DataloaderLite:
                 - Predict 7 given [23, 30, 31]
                 - etc.
         """
-        data = self.train_data if split_type == "train" else self.val_data
-
-        # Sample random starting indices for each sequence in the batch
-        starting_idx = torch.randint(
-            len(data) - self.seq_size,
-            (self.batch_size,)
-        ) 
+        B,T = self.batch_size, self.seq_size
         
-        # Extract sequences and create targets
-        xb = torch.stack([
-            data[i:i+self.seq_size] 
-            for i in starting_idx
-        ]) 
-        # Shift the sequence by one to the right to create the target
-        yb = torch.stack([
-            data[i+1:i+self.seq_size+1] 
-            for i in starting_idx
-        ]) 
+        data = self.train_data if split_type == "train" else self.val_data
+        starting_idx = torch.randint(len(data) - T, (B,))         # Sample random starting indices for each sequence in the batch
+        xb = torch.stack([data[i:i+T] for i in starting_idx])          # Extract sequences and create targets
+        yb = torch.stack([data[i+1:i+T+1] for i in starting_idx])         # Shift the sequence by one to the right to create the target       
         
         # Move to compute device (GPU or CPU)
-        xb, yb = xb.to(device), yb.to(device) 
+        xb, yb = xb.to(device), yb.to(device)
         
-        return xb, yb
+        return xb, yb  
 
-
-# Load and prepare data
 
 # Create dataloader instance
-train_loader = DataloaderLite(config.batch_size, config.seq_size)
-
+train_loader = DataLoaderLite(B=config.batch_size, T=config.seq_size)
 # Load and prepare data
 train_data = train_loader.train_data
 val_data = train_loader.val_data
@@ -208,12 +196,8 @@ print("MODEL INITIALIZATION")
 print('='*60)
 
 # Create model instance
-model = GPTModel(config).to(device)
-
-# Check dtype of all parameters. Default is float32, but can be changed to float16 for memory efficiency
-# print("\nModel parameters data types:")
-# for name, param in model.named_parameters():
-#     print(f"{name}: {param.dtype}")
+model = GPTModel(config)
+model.to(device) # this only works for the model, for tensors do tensor = tensor.to(device)
 
 # Count model parameters
 total_params = sum(p.numel() for p in model.parameters())
@@ -413,8 +397,6 @@ train_losses, val_losses, steps_recorded, final_losses = [], [], [], {}
 print(f"\nStarting training loop...")
 
 start_train = datetime.now() # Record start time of training
-# In each time step a different batch is sampled randomly with 32 sequences of 8 tokens
-
 # Initialize optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr = config.learning_rate) 
 for step in trange(config.training_steps, desc="Training steps", unit="step", disable=False):
@@ -423,16 +405,23 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
         
         losses = estimate_loss()
         starting_limits_ffn, starting_limits_pwe = update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model, starting_limits_ffn, starting_limits_pwe)
-
+    
+    t0 = time.time()
     # TRAINING PHASE
 
-    # Get a batch of training data
-    xb, yb = train_loader.next_batch(split_type='train')  # Sample a batch of data (this is a random batch from the train data)
+    # Sample a batch random of training data
+    xb, yb = train_loader.next_batch(split_type='train')
 
     _, loss = model(xb, yb) # Forward pass
     optimizer.zero_grad() # Reset gradients
     loss.backward() # Backward pass
-    optimizer.step() # Update weights
+    optimizer.step() # Update weights 
+    torch.cuda.synchronize() if compute_device == "cuda" else None  # Synchronize for accurate timing
+    t1 = time.time()
+    duration = t1 - t0
+
+    print(f"Step {step+1:03d} | Loss: {loss.item():.4f} | Time: {duration:.2f}s | Tokens/sec: {train_loader.batch_size * train_loader.seq_size / duration:.2f}")
+
 
 # Estimate loss after the last training step
 # This is to ensure the final losses are recorded even if the last step is not an evaluation 
