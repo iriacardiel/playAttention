@@ -6,20 +6,26 @@ from Config import GPT2Config
 from model_gpt2 import GPT2Model
 import tiktoken
 from termcolor import colored
-
+import time
 # =============================================================================
 # CONFIGURATION & SETUP
 # =============================================================================
+TENSOR_CORES = True  # Set to True to enable Tensor Cores for faster matrix multiplications on supported GPUs
+TORCH_COMPILATION = True  # Set to True to enable PyTorch 2.0's compile feature for performance optimization
+AUTOCAST = True  # Set to True to enable mixed precision training with autocast for performance optimization
 
 # Determine computation device (GPU or CPU)
-seed = 42
+seed = 1337
 torch.manual_seed(seed)
-torch.cuda.manual_seed(seed)
+
+# New! Set high precision for matmul operations TF32: This will be faster on GPUs with Tensor Cores
+torch.set_float32_matmul_precision('high') if TENSOR_CORES else None
 
 # Determine computation device (GPU or CPU)
 compute_device = "cpu"
 if torch.cuda.is_available():
     compute_device = "cuda"
+    torch.cuda.manual_seed(seed) 
 elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
     compute_device = "mps"
     
@@ -48,44 +54,59 @@ print("DATA PREPARATION")
 print('='*60)
 tokenizer = tiktoken.get_encoding("gpt2")
 
-# Load text file
-try:
-    with open(DATA_PATH, 'r', encoding='utf-8') as f:
-        text = f.read()
-except FileNotFoundError:
-    raise FileNotFoundError(f"Data file not found: {DATA_PATH}")
+class DataLoaderLite:
+    def __init__(self, B, T):
+        self.B = B
+        self.T = T
+        
+        # At init load tokens from disk and store them in memory
+        try:
+            with open(DATA_PATH, 'r', encoding='utf-8') as f:
+                text = f.read()
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Data file not found: {DATA_PATH}")
+        
+        tokens = tokenizer.encode(text)  # Encode the text into tokens
+        self.tokens = torch.tensor(tokens)
+        print(f"loaded {len(self.tokens)} tokens")
+        print(f"1 epoch = {len(self.tokens)// (B*T)} batches")
+        
+        # state
+        self.current_position = 0
+        
+    def next_batch(self):
+        """
+        Generate a batch of input-target pairs for training.
+            
+            How batching works:
+            - Sample random starting positions in the dataset
+            - Extract sequences of length seq_size starting from those positions
+            - Create targets by shifting input sequences by one position
+            
+            Example with seq_size=5, batch_size=2:
+                Input:  [[23, 30, 31, 7, 21], [45, 12, 8, 33, 9]]
+                Target: [[30, 31, 7, 21, 14], [12, 8, 33, 9, 41]]
+            
+            This gives us seq_size training examples per sequence:
+                - Predict 30 given [23]
+                - Predict 31 given [23, 30]
+                - Predict 7 given [23, 30, 31]
+                - etc.
+        """
+        B,T = self.B, self.T
+        buf = self.tokens[self.current_position: self.current_position+ B*T + 1]
+        xb = buf[:-1].view(B,T) # inputs
+        yb = buf[1:].view(B,T)  # targets (shifted) 
+        self.current_position += B*T # advance the current position by B*T tokens
 
-# Batch generator
-def get_batch(text)-> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Generate a batch of input-target pairs for training.
-        
-        How batching works:
-        - Sample random starting positions in the dataset
-        - Extract sequences of length seq_size starting from those positions
-        - Create targets by shifting input sequences by one position
-        
-        Example with seq_size=5, batch_size=2:
-            Input:  [[23, 30, 31, 7, 21], [45, 12, 8, 33, 9]]
-            Target: [[30, 31, 7, 21, 14], [12, 8, 33, 9, 41]]
-        
-        This gives us seq_size training examples per sequence:
-            - Predict 30 given [23]
-            - Predict 31 given [23, 30]
-            - Predict 7 given [23, 30, 31]
-            - etc.
-    """
-    text = text[:1000] # first 1000 characters for testing purposes
-    tokens = tokenizer.encode(text)  # Encode the text into tokens
-    B, T = 4, 32
-    buf = torch.tensor(tokens[:B*T + 1], dtype=torch.long)  # Convert tokens to tensor
-    xb = buf[:-1].view(B,T)
-    yb = buf[1:].view(B,T)  # Shifted version for targets
-    
-    # Move to compute device (GPU or CPU)
-    xb, yb = xb.to(device), yb.to(device) 
-    
-    return xb, yb
+        # If we reach the end of the tokens, reset to the beginning
+        if self.current_position + B*T + 1 > len(self.tokens):
+            self.current_position = 0
+
+        # Move to compute device (GPU or CPU)
+        xb, yb = xb.to(device), yb.to(device)
+        return xb, yb         
+
 
 # =============================================================================
 # MODEL INITIALIZATION
@@ -103,8 +124,8 @@ if PRETRAINED:
 else: 
     model = GPT2Model(config) # If you want to use the model with randomly initialized weights (before any training)
 
-model.eval()
-model.to(device)
+model.to(device) # this only works for the model, for tensors do tensor = tensor.to(device)
+model = torch.compile(model) if TORCH_COMPILATION else model # https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html Speed ups the model with PyTorch 2.0's compile feature (optional, but recommended for performance). Speedup mainly comes from reducing Python overhead and GPU read/writes, and so the observed speedup may vary on factors such as model architecture and batch size
 
 # =============================================================================
 # TRAINING 
@@ -113,62 +134,77 @@ print(f"\n{'='*60}")
 print("TRAINING")
 print('='*60)
 
+# Initialize Data Loader
+train_loader = DataLoaderLite(B=16, T=1024)
+
 # Initialize optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
+    t0 = time.time()
     
     # TRAINING PHASE
     
     # Get a batch of training data
-    xb, yb = get_batch(text)
+    xb, yb = train_loader.next_batch()
     
-    _, loss = model(xb, yb) # Forward pass
+    # Forward pass through the model
+    if AUTOCAST:
+        with torch.autocast(device_type=compute_device, dtype=torch.bfloat16 if compute_device == "cuda" else torch.float32): # New! Use autocast for mixed precision training: https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html
+            logits, loss = model(xb, yb) # Forward pass optimized for speed
+    else:
+        logits, loss = model(xb, yb) # Forward pass without autocast
+    
     optimizer.zero_grad() # Reset gradients
     loss.backward() # Backward pass
     optimizer.step() # Update weights
-    print(f"Step {i+1}, Loss: {loss.item():.4f}")
-# =============================================================================
-# INFERENCE & TEXT GENERATION
-# =============================================================================
-# Context tokens
-context_text = "Hello, I'm a language model,"
-context_tokens = tokenizer.encode(context_text)
-context_tokens = torch.tensor(context_tokens, dtype=torch.long) # 1, 8
+    torch.cuda.synchronize() if compute_device == "cuda" else None  # Synchronize for accurate timing
+    t1 = time.time()
+    duration = t1 - t0
+    
+    print(f"Step {i+1:03d} | Loss: {loss.item():.4f} | Time: {duration:.2f}s | Tokens/sec: {train_loader.B * train_loader.T / duration:.2f}")
 
-# Manually generating a batch with the same sequence context_tokens 5 times 
-num_generated_sequences = 5
-context_tokens = context_tokens.unsqueeze(0).repeat(num_generated_sequences, 1) # 5, 8
-idx = context_tokens.to(device)
+# # =============================================================================
+# # INFERENCE & TEXT GENERATION
+# # =============================================================================
+# # Context tokens
+# context_text = "Hello, I'm a language model,"
+# context_tokens = tokenizer.encode(context_text)
+# context_tokens = torch.tensor(context_tokens, dtype=torch.long) # 1, 8
 
-max_new_tokens = 30
+# # Manually generating a batch with the same sequence context_tokens 5 times 
+# num_generated_sequences = 5
+# context_tokens = context_tokens.unsqueeze(0).repeat(num_generated_sequences, 1) # 5, 8
+# idx = context_tokens.to(device)
 
-# Generate from context tokens (manually instead of using model.generate() not implemented yet)
-while idx.size(1) < max_new_tokens:
+# max_new_tokens = 30
 
-    with torch.no_grad():
-        # right now idx is (B,T) where B = 5, T = 8
+# # Generate from context tokens (manually instead of using model.generate() not implemented yet)
+# while idx.size(1) < max_new_tokens:
 
-        # forward the model
-        logits, loss = model(idx)  # (B, T, vocab_size)
+#     with torch.no_grad():
+#         # right now idx is (B,T) where B = 5, T = 8
 
-        # Focus on the last time step (next token prediction)
-        logits = logits[:, -1, :] # (B, vocab_size) 
+#         # forward the model
+#         logits, _ = model(idx)  # (B, T, vocab_size)
 
-        # Convert to probabilities
-        probs = F.softmax(logits, dim = -1) # (B, vocab_size)
+#         # Focus on the last time step (next token prediction)
+#         logits = logits[:, -1, :] # (B, vocab_size) 
 
-        # Do top-k sampling of 50 (huggingface default pipeline)
-        # topk_probs here becomes (5,50) and topk_indices becomes (5,50)
-        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)  # Get top 50 probabilities and indices
-        ix = torch.multinomial(topk_probs, num_samples=1)  # Select a token from the top 50 probabilities
-        xcol = torch.gather(topk_indices, -1, ix) # Gather the corresponding token indices based on the sampled probabilities
+#         # Convert to probabilities
+#         probs = F.softmax(logits, dim = -1) # (B, vocab_size)
+
+#         # Do top-k sampling of 50 (huggingface default pipeline)
+#         # topk_probs here becomes (5,50) and topk_indices becomes (5,50)
+#         topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)  # Get top 50 probabilities and indices
+#         ix = torch.multinomial(topk_probs, num_samples=1)  # Select a token from the top 50 probabilities
+#         xcol = torch.gather(topk_indices, -1, ix) # Gather the corresponding token indices based on the sampled probabilities
         
-        # Append to sequence
-        idx = torch.cat((idx, xcol), dim = 1) # (B, T+1)
+#         # Append to sequence
+#         idx = torch.cat((idx, xcol), dim = 1) # (B, T+1)
 
-# print the generated sequences
-for i in range(num_generated_sequences):
-    generated_tokens = idx[i, :max_new_tokens].tolist() # Get the generated tokens for this sequence
-    generated_text = tokenizer.decode(generated_tokens)  # Decode the tokens to text
-    print(f"Generated text {i+1}: <START>", colored(generated_text, "cyan"), "<END>")
+# # print the generated sequences
+# for i in range(num_generated_sequences):
+#     generated_tokens = idx[i, :max_new_tokens].tolist() # Get the generated tokens for this sequence
+#     generated_text = tokenizer.decode(generated_tokens)  # Decode the tokens to text
+#     print(f"Generated text {i+1}: <START>", colored(generated_text, "cyan"), "<END>")
 
