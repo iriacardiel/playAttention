@@ -26,6 +26,7 @@ import math
 from Config import GPT2Config, ModelConfig
 from transformers import GPT2LMHeadModel # Huggingface model that we will use to load the weights
 
+FLASH_ATTENTION = True # New! Use Flash Attention for faster training: https://arxiv.org/abs/2205.14135
 
 # =============================================================================
 # MODEL ARCHITECTURE
@@ -66,11 +67,15 @@ class MultiHeadAttention(nn.Module):
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # reshape q to (B, n_head, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # reshape v to (B, n_head, T, hs)
         
-        # attention (materializes the large (T,T) matrix for all the queries and keys)
-        att = (q@k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1))) # (B, n_head, T, T)
-        att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-        att = F.softmax(att, dim=-1)
-        y = att @ v # (B, n_head, T, hs)
+        if FLASH_ATTENTION:
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        else:
+            # attention (materializes the large (T,T) matrix for all the queries and keys)
+            att = (q@k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1))) # (B, n_head, T, T)
+            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
+            att = F.softmax(att, dim=-1)
+            y = att @ v # (B, n_head, T, hs)
+            
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble  all head outputs side by side 
         # output projection
         y = self.c_proj(y) # (B, T, C)

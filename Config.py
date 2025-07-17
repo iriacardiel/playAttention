@@ -58,7 +58,7 @@ class GPT2Config(ModelConfig):
         
     # Tokenizer
     selected_tokenizer: str = "TiktokenGPT2" # Choose tokenizer: "CharTokenizer" or "TiktokenGPT2"
-    vocab_size: int = 50257 # Number of tokens in the vocabulary: (50000 BPE Merges + 256 Bytes tokens + 1 EOS token) for GPT-2, or 256 for char-level tokenizer, etc. 
+    vocab_size: int = 50304 # New! 50304 Increased from 50257 to the nearest power of 2 (ugly number: 50000 BPE Merges + 256 Bytes tokens + 1 EOS token) for GPT-2
 
     # Model Architecture Parameters
     seq_size: int = 1024 # Number of tokens in the input sequence. Maximum context length for the predictions
@@ -68,4 +68,8 @@ class GPT2Config(ModelConfig):
     
     # Training Parameters
     training_steps : int = 50 # Number of training steps
-    learning_rate : float = 3e-4 # Lower if the model is bigger, higher if the model is smaller. 
+    learning_rate : float = 6e-4 # Lower if the model is bigger, higher if the model is smaller.
+    warmup_steps: int = 10 # New! Number of warmup steps for the learning rate scheduler  
+    beta1: float = 0.9 # New! Beta1 for AdamW optimizer
+    beta2: float = 0.95 # New! Beta2 for AdamW optimizer
+    eps: float  = 1e-8 # New! Epsilon for AdamW optimizer

@@ -3,6 +3,7 @@ Training Script
 =====================================
 """
 
+import math
 import os
 import csv
 import json
@@ -62,20 +63,19 @@ DATA_PATH = 'data/tinyshakespeare.txt'
 
 config = GPT2Config(compute_device=compute_device)
 
-print(f"\n{'='*60}")
+
 print("HYPERPARAMETERS")
-print('='*60)
+
 print(config.model_dump_json(indent=2))  # Print the configuration in JSON format
 
 
 # =============================================================================
 # DATA PREPARATION
 # =============================================================================
-print(f"\n{'='*60}")
+
 print("DATA PREPARATION")
-print('='*60)
+
 tokenizer = tiktoken_tokenizer
-assert config.vocab_size == tokenizer.n_vocab
 class DataLoaderLite:
     def __init__(self, B, T):
         self.batch_size = B
@@ -148,9 +148,9 @@ train_loader = DataLoaderLite(B=16, T=1024)
 # =============================================================================
 # MODEL INITIALIZATION
 # =============================================================================
-print(f"\n{'='*60}")
+
 print("MODEL INITIALIZATION")
-print('='*60)
+
 
 # Create model instance
 #model = GPT2Model.from_pretrained('gpt2') # Load the pre-trained GPT-2 model from Huggingface
@@ -168,7 +168,7 @@ model_summary = (
     f"  Total parameters: {total_params:,}\n"
     f"  Trainable parameters: {trainable_params:,}\n"
     f"  Model size: ~{total_params * 4 / 1024**2:.2f} MB (float32)\n" # asu
-    f"\n\nOptimizer: AdamW with learning rate PENDING\n"
+    f"\n\nOptimizer: AdamW with learning rate {config.learning_rate}\n"
 )
 
 print(model_summary)
@@ -179,21 +179,44 @@ print(model_summary)
 # Option 1
 #print(colored(model, "green"))
 # Option 2
-for k, v in model.state_dict().items():
-    print(colored(f"{k}: {v.shape} - {v.dtype}", "green"))  # Print each parameter's shape and dtype
+# for k, v in model.state_dict().items():
+#     print(colored(f"{k}: {v.shape} - {v.dtype}", "green"))  # Print each parameter's shape and dtype
 
 
 # =============================================================================
 # TRAINING 
 # =============================================================================
-print(f"\n{'='*60}")
-print("TRAINING")
-print('='*60)
-print(f"\nStarting training loop...")
 
+print("TRAINING")
+
+# New! Learning rate scheduler function
+def get_lr(step: int, config: GPT2Config) -> float:
+    """
+    Get the learning rate for the current training step.
+    
+    Uses a cosine decay schedule with warmup.
+    """
+    max_lr = config.learning_rate  # Maximum learning rate
+    min_lr = max_lr * 0.1  # Minimum learning rate (10% of max)
+    warmup_steps = config.warmup_steps  # Number of warmup steps
+    total_steps = config.training_steps  # Total training steps
+    # Learning rate warmup
+    if step < warmup_steps:
+        return max_lr * (step+1) / warmup_steps  # Linear warmup
+    
+    # Learning rate after training steps
+    if step > total_steps:
+        return min_lr
+    
+    # Learning rate decay
+    decay_ratio = (step - warmup_steps) / (total_steps - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
+    return min_lr + coeff * (max_lr - min_lr)
+    
 start_train = datetime.now() # Record start time of training
 # Initialize optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
+optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, betas=(config.beta1, config.beta2), eps=config.eps) # New! Use AdamW optimizer with beta1, beta2 and epsilon parameters for better convergence
 for step in range(config.training_steps):
     t0 = time.time()
     # TRAINING PHASE
@@ -209,13 +232,23 @@ for step in range(config.training_steps):
     
     optimizer.zero_grad() # Reset gradients
     loss.backward() # Backward pass
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) # New! Clipping gradients to stabilize training and avoid exploding gradients
+    
+    # New! Determine and set the learning rate for this step
+    lr = get_lr(step, config)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+        
+        
     optimizer.step() # Update weights 
     torch.cuda.synchronize() if compute_device == "cuda" else None  # Synchronize for accurate timing
     t1 = time.time()
     duration = t1 - t0
 
-    print(f"Step {step+1:03d} | Loss: {loss.item():.4f} | Time: {duration:.2f}s | Tokens/sec: {train_loader.batch_size * train_loader.seq_size / duration:.2f}")
+    print(f"Step {step+1:03d} | Loss: {loss.item():.4} | lr: {lr:.4e} | norm: {norm:.4e} | dt: {duration:.4}s | Tokens/sec: {train_loader.batch_size * train_loader.seq_size / duration}")
 
+end_train = datetime.now() # Record start time of training
+print(f"\nTraining completed in {end_train - start_train} (HH:MM:SS)")
 # # =============================================================================
 # # INFERENCE & TEXT GENERATION
 # # =============================================================================

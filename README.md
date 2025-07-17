@@ -96,6 +96,28 @@ _WIP_
 
 ![alt text](images/attention.svg)
 
+#### Flash Attention (only implemented in `model_gpt2.py`)
+
+The `Flash Attention` is a new feature that allows for faster training of the model by optimizing the attention mechanism. It is implemented in the `MultiHeadAttention` class in `model_gpt2.py`.
+
+To enable Flash Attention, set the `FLASH_ATTENTION` variable to `True` in the `model_gpt2.py` file. This will use the optimized attention mechanism during training.
+
+```python
+FLASH_ATTENTION = True # New! Use Flash Attention for faster training: https://arxiv.org/abs/2205.14135
+```
+
+#### How it works?
+Flash Attention is a memory-efficient attention mechanism that reduces the memory footprint and computational cost of the attention operation. It achieves this by using a more efficient algorithm for computing the attention scores and applying them to the value vectors.
+
+#### Example Usage
+In the `MultiHeadAttention` class, the attention mechanism is implemented as follows:
+
+```python
+if FLASH_ATTENTION:
+    y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+else:
+    # standard attention mechanism ...
+```
 ### Feed Forward 
 
 _WIP_
@@ -143,7 +165,7 @@ Using lower-precision data types like **FP16 or BF16 can significantly reduce me
 
 ![alt text](images/NVIDIA-A100-details.png)
 
-### Tensor Cores
+### Tensor Cores (only implemented in `training-gpt2.py`)
 
 #### Why Use Tensor Cores?
 
@@ -167,7 +189,7 @@ To activate Tensor Cores in PyTorch, you can set the float32 matrix multiplicati
 torch.set_float32_matmul_precision('high')
 ```
 
-### Automatic Mixed Precision (Autocast)
+### Automatic Mixed Precision (Autocast) (only implemented in `training-gpt2.py`)
 
 
 Automatic Mixed Precision (AMP) is a feature in PyTorch that automatically selects the appropriate precision (e.g., FP16 or FP32) for each operation during training.
@@ -195,7 +217,7 @@ As you can see, the `torch.autocast` context manager is used to wrap the forward
 
 
 
-### Torch Compile
+### Torch Compile (only implemented in `training-gpt2.py`)
 
 Torch Compile is a feature in PyTorch that optimizes the execution of your model by reducing unnecessary memory movements and improving computational efficiency. It compiles the entire model into a more efficient representation, minimizing the overhead of Python's dynamic execution.
 
@@ -227,6 +249,13 @@ model = torch.compile(model)
 
 This will compile your model into an optimized representation, improving performance during training and inference.
 
+### Ugly Numbers
+
+Ugly numbers are those that are not powers of two, such as 50000. In the context of tokenizers, they can lead to inefficiencies in memory usage and computational performance.
+
+To solve this, we can round up ugly numbers like the vocabulary size (50257) to the nearest power of two (50304). This ensures that the model can utilize memory and computational resources more efficiently.
+
+This will add empty tokens to the vocabulary, but it is a common practice in deep learning to ensure that the model can handle the data efficiently. The transformer will learn to drop these tokens probabilistically during training, so they won't affect the model's performance.
 
 ### Results
 
@@ -279,3 +308,4 @@ It stands so your.
 
 ...
 ```
+

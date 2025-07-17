@@ -54,18 +54,18 @@ os.makedirs(REPORT_DIR, exist_ok=True)
 
 config = GPTConfig(compute_device=compute_device)
 
-print(f"\n{'='*60}")
+
 print("HYPERPARAMETERS")
-print('='*60)
+
 print(config.model_dump_json(indent=2))  # Print the configuration in JSON format
 
 
 # =============================================================================
 # DATA PREPARATION
 # =============================================================================
-print(f"\n{'='*60}")
+
 print("DATA PREPARATION")
-print('='*60)
+
 tokenizer = char_level_tokenizer if config.selected_tokenizer == char_level_tokenizer.name else tiktoken_tokenizer
 config.vocab_size = tokenizer.n_vocab  # Set vocabulary size based on the tokenizer
 class DataLoaderLite:
@@ -150,9 +150,9 @@ train_loader = DataLoaderLite(B=config.batch_size, T=config.seq_size)
 # =============================================================================
 # MODEL INITIALIZATION
 # =============================================================================
-print(f"\n{'='*60}")
+
 print("MODEL INITIALIZATION")
-print('='*60)
+
 
 # Create model instance
 model = GPTModel(config)
@@ -179,8 +179,8 @@ print(model_summary)
 # Option 1
 #print(colored(model, "green"))
 # Option 2
-for k, v in model.state_dict().items():
-    print(colored(f"{k}: {v.shape} - {v.dtype}", "green"))  # Print each parameter's shape and dtype
+# for k, v in model.state_dict().items():
+#     print(colored(f"{k}: {v.shape} - {v.dtype}", "green"))  # Print each parameter's shape and dtype
 
 
 
@@ -347,13 +347,13 @@ def estimate_loss():
 # =============================================================================
 # TRAINING 
 # =============================================================================
-print(f"\n{'='*60}")
+
 print("TRAINING")
-print('='*60)
+
 
 # Initialize lists to store losses for plotting and logging
 train_losses, val_losses, steps_recorded, final_losses = [], [], [], {}
-print(f"\nStarting training loop...")
+
 
 start_train = datetime.now() # Record start time of training
 # Initialize optimizer
