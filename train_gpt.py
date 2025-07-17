@@ -470,7 +470,7 @@ if TRAIN:
     enc = config.tokenizer
     context_tokens = enc.encode(context_text)
     context_tokens = torch.tensor(context_tokens, dtype=torch.long)
-    idx = context_tokens.to(device)
+    idx = context_tokens.to(device).unsqueeze(0)  # Shape becomes (1, seq_len)
 
     # Generate from context tokens
     generated_tokens = model.generate(idx, max_new_tokens=500)[0].tolist()
