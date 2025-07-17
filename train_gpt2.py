@@ -5,6 +5,15 @@ from model_gpt2 import GPT2Model
 import tiktoken
 from termcolor import colored
 
+compute_device = "cpu"
+if torch.cuda.is_available():
+    compute_device = "cuda"
+elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+    compute_device = "mps"
+    
+print("Using device:", compute_device)
+
+device = torch.device(compute_device)
 
 # =============================================================================
 # MODEL INITIALIZATION
@@ -23,7 +32,7 @@ else:
     model = GPT2Model(config=GPT2Config()) # If you want to use the model with randomly initialized weights (before any training)
 
 model.eval()
-model.to('cuda')
+model.to(device)
 
 # =============================================================================
 # TRAINING 
@@ -44,8 +53,7 @@ context_tokens = torch.tensor(context_tokens, dtype=torch.long) # 1, 8
 # Manually generating a batch with the same sequence context_tokens 5 times 
 num_generated_sequences = 5
 context_tokens = context_tokens.unsqueeze(0).repeat(num_generated_sequences, 1) # 5, 8
-
-idx = context_tokens.to('cuda')
+idx = context_tokens.to(device)
 
 max_new_tokens = 30
 torch.manual_seed(42)  # For reproducibility
