@@ -26,6 +26,7 @@ from model_gpt2 import GPT2Model
 # =============================================================================
 # CONFIGURATION & SETUP
 # =============================================================================
+
 # For reproducibility
 seed = 1337
 torch.manual_seed(seed)
@@ -59,7 +60,8 @@ DATA_PATH = 'data/tinyshakespeare.txt'
 # HYPERPARAMETERS
 # =============================================================================
 
-config = GPT2Config()
+config = GPT2Config(compute_device=compute_device)
+
 print(f"\n{'='*60}")
 print("HYPERPARAMETERS")
 print('='*60)
@@ -73,7 +75,7 @@ print(f"\n{'='*60}")
 print("DATA PREPARATION")
 print('='*60)
 tokenizer = tiktoken_tokenizer
-
+assert config.vocab_size == tokenizer.n_vocab
 class DataLoaderLite:
     def __init__(self, B, T):
         self.batch_size = B
@@ -191,12 +193,11 @@ print(f"\nStarting training loop...")
 
 start_train = datetime.now() # Record start time of training
 # Initialize optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
-for step in range(50):
+optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
+for step in range(config.training_steps):
     t0 = time.time()
-    
     # TRAINING PHASE
-    
+
     # Sample a batch random of training data
     xb, yb = train_loader.next_batch()
     

@@ -48,45 +48,11 @@ DATA_PATH = 'data/tinyshakespeare.txt'
 REPORT_DIR = f'reports/training_{TRAIN_ID}_{compute_device}'
 # Create plots directory
 os.makedirs(REPORT_DIR, exist_ok=True)
-
 # =============================================================================
 # HYPERPARAMETERS
 # =============================================================================
 
-"""config = GPTConfig(
-            compute_device=compute_device,
-            selected_tokenizer="CharTokenizer",  # Use string to refer to the tokenizer
-            vocab_size=None,  # Will be set after data preparation
-            seq_size=256,
-            batch_size=64,
-            n_embd=384,
-            n_head=6,
-            n_layer=6,
-            dropout=0.2,
-            training_steps=5000,
-            learning_rate=3e-4,
-            eval_iters=100,
-            eval_interval=100, 
-            train_val_ratio=0.9
-            )"""
-
-config = GPTConfig(
-            compute_device=compute_device,
-            selected_tokenizer="CharTokenizer",  # Use string to refer to the tokenizer
-            vocab_size=None,  # Will be set after data preparation
-            seq_size=8,
-            batch_size=32,
-            n_embd=32,
-            n_head=4,
-            n_layer=3,
-            dropout=0,
-            training_steps=20000,
-            learning_rate=1e-3,
-            eval_iters=100,
-            eval_interval=100,
-            train_val_ratio=0.9
-            )
-
+config = GPTConfig(compute_device=compute_device)
 
 print(f"\n{'='*60}")
 print("HYPERPARAMETERS")
@@ -101,7 +67,7 @@ print(f"\n{'='*60}")
 print("DATA PREPARATION")
 print('='*60)
 tokenizer = char_level_tokenizer if config.selected_tokenizer == char_level_tokenizer.name else tiktoken_tokenizer
-
+config.vocab_size = tokenizer.n_vocab  # Set vocabulary size based on the tokenizer
 class DataLoaderLite:
     def __init__(self, B, T):
         self.batch_size = B
@@ -180,13 +146,6 @@ class DataLoaderLite:
 
 # Create dataloader instance
 train_loader = DataLoaderLite(B=config.batch_size, T=config.seq_size)
-# Load and prepare data
-train_data = train_loader.train_data
-val_data = train_loader.val_data
-vocab_size = train_loader.vocab_size
-
-# Update config with actual vocab_size
-config.vocab_size = vocab_size
 
 # =============================================================================
 # MODEL INITIALIZATION
@@ -398,7 +357,7 @@ print(f"\nStarting training loop...")
 
 start_train = datetime.now() # Record start time of training
 # Initialize optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr = config.learning_rate) 
+optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
 for step in trange(config.training_steps, desc="Training steps", unit="step", disable=False):
     # EVALUATION PHASE
     if step % config.eval_interval == 0: # Every eval_interval steps pause training and evaluate the mean loss on train and val sets on eval_iters batches
@@ -412,7 +371,7 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
     # Sample a batch random of training data
     xb, yb = train_loader.next_batch(split_type='train')
 
-    _, loss = model(xb, yb) # Forward pass
+    logits, loss = model(xb, yb) # Forward pass
     optimizer.zero_grad() # Reset gradients
     loss.backward() # Backward pass
     optimizer.step() # Update weights 
@@ -466,7 +425,7 @@ report = f"""# Training Report
 
 **Training Session:** `{TRAIN_ID}`
 
-**Training Device:** `{device}`
+**Training Device:** `{compute_device}`
 
 ## 🎯 Training Result
 
@@ -484,18 +443,18 @@ report = f"""# Training Report
 
 ## Hyperparameters and Configuration
 
-| Hyperparameters and Architecture |                            | | | Model Dimension         |                                                  | | | Dataset Details      |                                                            |
-|----------------------------------|----------------------------|-|-|-------------------------|--------------------------------------------------|-|-|----------------------|------------------------------------------------------------|
-| seq_size                       | `{config.seq_size}` tokens   | | | Total Parameters        | `{total_params:,}`                               | | | Dataset              | `{DATA_PATH}`                                              |
-| batch_size                     | `{config.batch_size}`        | | | Trainable Parameters    | `{trainable_params:,}`                           | | | Vocabulary Size      | `{vocab_size:,}` tokens                                    |
-| n_embd (dim)                   | `{config.n_embd}`            | | | Model Size              | ~`{total_params * 4 / 1024**2:.2f}` MB (float32) | | | Dataset Size         | `{len(train_data) + len(val_data):,}` tokens               |
-| n_head                         | `{config.n_head}`            | | | Optimizer               | AdamW with learning rate `{config.learning_rate}`| | | Training Tokens      | `{len(train_data):,}` tokens ({config.train_val_ratio:.1%})|
-| n_layer                        | `{config.n_layer}`           | | | Tokenizer               | `{tokenizer.name}`                        | | | Validation Tokens    | `{len(val_data):,}` tokens ({1-config.train_val_ratio:.1%})|
-| dropout                        | `{config.dropout}`           | | |                         |                                                  | | |                      |                                                            |
-| training_steps                 | `{config.training_steps:,}`  | | |                         |                                                  | | |                      |                                                            |
-| learning_rate                  | `{config.learning_rate}`     | | |                         |                                                  | | |                      |                                                            |
-| eval_interval                  | `{config.eval_interval}`     | | |                         |                                                  | | |                      |                                                            |
-| eval_iters                     | `{config.eval_iters}`        | | |                         |                                                  | | |                      |                                                            |
+| Hyperparameters and Architecture |                            | | | Model Dimension         |                                                  | | | Dataset Details      |                                                                         |
+|----------------------------------|----------------------------|-|-|-------------------------|--------------------------------------------------|-|-|----------------------|-------------------------------------------------------------------------|
+| seq_size                       | `{config.seq_size}` tokens   | | | Total Parameters        | `{total_params:,}`                               | | | Dataset              | `{DATA_PATH}`                                                           |
+| batch_size                     | `{config.batch_size}`        | | | Trainable Parameters    | `{trainable_params:,}`                           | | | Dataset Size         | `{len(train_loader.train_data) + len(train_loader.val_data):,}` tokens  |
+| n_embd (dim)                   | `{config.n_embd}`            | | | Model Size              | ~`{total_params * 4 / 1024**2:.2f}` MB (float32) | | | Training Tokens      | `{len(train_loader.train_data):,}` tokens ({config.train_val_ratio:.1%})|
+| n_head                         | `{config.n_head}`            | | | Optimizer               | AdamW with learning rate `{config.learning_rate}`| | | Validation Tokens    | `{len(train_loader.val_data):,}` tokens ({1-config.train_val_ratio:.1%})|
+| n_layer                        | `{config.n_layer}`           | | | Tokenizer               | `{tokenizer.name}`                               | | |                      |                                                                         |
+| dropout                        | `{config.dropout}`           | | | Vocabulary Size         | `{tokenizer.n_vocab:,}` tokens                | | |                      |                                                                         |
+| training_steps                 | `{config.training_steps:,}`  | | |                         |                                                  | | |                      |                                                                         |
+| learning_rate                  | `{config.learning_rate}`     | | |                         |                                                  | | |                      |                                                                         |
+| eval_interval                  | `{config.eval_interval}`     | | |                         |                                                  | | |                      |                                                                         |
+| eval_iters                     | `{config.eval_iters}`        | | |                         |                                                  | | |                      |                                                                         |
 
 
 """
@@ -506,11 +465,9 @@ with open(f'{REPORT_DIR}/report.md', 'w', encoding='utf-8') as f:
 # Save configuration as JSON
 with open(f'{REPORT_DIR}/config.json', 'w', encoding='utf-8') as f:
     config_dict = config.model_dump()
-    config_dict["compute_device"] = compute_device
-    config_dict["selected_tokenizer"] = tokenizer.name 
-    f.write(json.dumps(config_dict, indent = 2))
-        
-    
+    #config_dict["compute_device"] = compute_device
+    #config_dict["selected_tokenizer"] = tokenizer.name
+    f.write(json.dumps(config_dict, indent=2))
 
 
 
