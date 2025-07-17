@@ -1,8 +1,8 @@
 """
-GPT2-style Transformer
+GPT-2
 =====================================
 
-This script implements a small GPT2-style transformer from scratch for educational purposes.
+This script implements a small language model based on the decoder-only transformer.
 It includes detailed comments explaining each component and process.
 
 Architecture:
@@ -18,12 +18,13 @@ Note:
 
 """
 
-from Config import GPT2Config
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import math
 from transformers import GPT2LMHeadModel # Huggingface model that we will use to load the weights
+from Config import GPT2Config, ModelConfig
+
 
 # =============================================================================
 # MODEL ARCHITECTURE
@@ -36,12 +37,14 @@ class MultiHeadAttention(nn.Module):
 
     Mathematically equivalent to implementing each Head separately and concatenating.
     """
-    def __init__(self, config:  GPT2Config): # KARPATHY IS MISSING THIS LINE, WHY?
+    def __init__(self, config: ModelConfig):
         super().__init__()
         assert config.n_embd % config.n_head == 0, "Embedding dimension must be divisible by number of heads"
         # key, query, value projections for all heads, but in a batch
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd) # 3 because we have query, key, and value. This replaces the three linear layers for each Q,K,V
-        # output projection
+
+
+        # Project concatenated heads back to embedding dimension
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
         # regularization
         self.n_head = config.n_head
@@ -95,7 +98,7 @@ class FeedForward(nn.Module):
     
     Architecture: Linear -> GeLU -> Linear -> Dropout
     """
-    def __init__(self, config: GPT2Config):
+    def __init__(self, config: ModelConfig):
         super().__init__()
         
         hidden_size = 4 * config.n_embd                      # Standard transformer uses 4x expansion
@@ -133,7 +136,7 @@ class TransformerBlock(nn.Module):
     - Pre-LayerNorm has been shown to be more stable and easier to train
     - It helps with gradient flow in deep networks
     """
-    def __init__(self, config:  GPT2Config):
+    def __init__(self, config: ModelConfig):
         super().__init__()
         
         self.ln_1 = nn.LayerNorm(config.n_embd)              # Pre-Norm
@@ -153,7 +156,7 @@ class TransformerBlock(nn.Module):
     
 class GPT2Model(nn.Module):
     """
-    GPT2-style Language Model.
+    GPT-2 Language Model.
     
     Architecture Overview:
     =====================
@@ -169,7 +172,7 @@ class GPT2Model(nn.Module):
     - Causal: Cannot look at future tokens during training
     - Transformer: Uses attention mechanism for token interactions
     """
-    def __init__(self, config: GPT2Config):
+    def __init__(self, config: ModelConfig):
         super().__init__()
         
         self.config = config
@@ -186,7 +189,6 @@ class GPT2Model(nn.Module):
         )) # Stack of n_layer transformer blocks
         
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)                   # Project to vocabulary 
-        
     def forward(self, idx: torch.Tensor):
         """
         Forward pass through the model.
@@ -271,3 +273,27 @@ class GPT2Model(nn.Module):
                 with torch.no_grad():
                     sd[k].copy_(sd_hf[k])
         return model
+    
+    def generate(self, idx: torch.Tensor, max_new_tokens: int) -> torch.Tensor:
+        """
+        Generate new tokens autoregressively in all the batch dimensions
+        (BxT) --> BxT+1, BxT+2, BxT+3, ...., BxT+max_new_tokens
+        
+        Process:
+        1. Take current sequence
+        2. Get predictions for next token
+        3. Sample from the probability distribution
+        4. Append to sequence
+        5. Repeat
+        
+        Note: We crop the input to seq_size to respect the model's context window.
+        
+        Args:
+            idx: Starting context, shape (batch_size, current_length)
+            max_new_tokens: Number of tokens to generate
+        
+        Returns:
+            Generated sequence, shape (batch_size, current_length + max_new_tokens)
+        """
+        # NOT IMPLEMENTED YET
+        raise NotImplementedError("Generation method not implemented yet.")

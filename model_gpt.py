@@ -1,8 +1,8 @@
 """
-GPT-style Transformer
+GPT
 =====================================
 
-This script implements a small GPT-style transformer from scratch for educational purposes.
+This script implements a small language model based on the decoder-only transformer.
 It includes detailed comments explaining each component and process.
 
 Architecture:
@@ -13,11 +13,11 @@ Architecture:
 - Residual connections and layer normalization
 """
 
-from typing import Tuple, Optional
-from Config import GPTConfig
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from typing import Tuple, Optional
+from Config import ModelConfig
 
 
 # =============================================================================
@@ -43,7 +43,7 @@ class AttentionHead(nn.Module):
     4. Apply weights to values: attention_weights @ V
     
     """
-    def __init__(self, config: GPTConfig):
+    def __init__(self, config: ModelConfig):
         super().__init__()
         head_size = config.n_embd // config.n_head # head_size is a divisor of n_embd, the embedding dimension
 
@@ -109,8 +109,7 @@ class MultiHeadAttention(nn.Module):
     original embedding dimension, allowing the model to use all these
     different types of attention simultaneously.
     """
-    
-    def __init__(self, config: GPTConfig):
+    def __init__(self, config: ModelConfig):
         super().__init__()
         # Multiple attention heads operating in parallel
 
@@ -118,8 +117,9 @@ class MultiHeadAttention(nn.Module):
             AttentionHead(config)
             for _ in range(config.n_head)
         ])
+
         # Project concatenated heads back to embedding dimension
-        self.proj = nn.Linear(config.n_embd, config.n_embd)
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
         
         # Dropout layer for regularization
         self.dropout = nn.Dropout(config.dropout) 
@@ -130,8 +130,8 @@ class MultiHeadAttention(nn.Module):
         out = torch.cat(head_outputs, dim=-1) # (B, T, n_embd)
         
         # Project back to embedding dimension
-        out = self.proj(out) 
-        
+        out = self.c_proj(out) 
+
         # Apply dropout for regularization
         out = self.dropout(out) 
         
@@ -159,7 +159,7 @@ class FeedForward(nn.Module):
     
     Architecture: Linear -> ReLU -> Linear -> Dropout
     """
-    def __init__(self, config: GPTConfig):
+    def __init__(self, config: ModelConfig):
         super().__init__()
         
         hidden_size = 4 * config.n_embd                      # Standard transformer uses 4x expansion
@@ -198,7 +198,7 @@ class TransformerBlock(nn.Module):
     - Pre-LayerNorm has been shown to be more stable and easier to train
     - It helps with gradient flow in deep networks
     """
-    def __init__(self, config: GPTConfig):
+    def __init__(self, config: ModelConfig):
         super().__init__()
         
         self.ln_1 = nn.LayerNorm(config.n_embd)              # Pre-Norm
@@ -216,10 +216,9 @@ class TransformerBlock(nn.Module):
            
         return x
     
-
 class GPTModel(nn.Module):
     """
-    GPT-style Language Model.
+    GPT Language Model.
     
     Architecture Overview:
     =====================
@@ -235,7 +234,7 @@ class GPTModel(nn.Module):
     - Causal: Cannot look at future tokens during training
     - Transformer: Uses attention mechanism for token interactions
     """
-    def __init__(self, config: GPTConfig):
+    def __init__(self, config: ModelConfig):
         super().__init__()
         
         self.config = config
@@ -251,8 +250,8 @@ class GPTModel(nn.Module):
         self.ln_f = nn.LayerNorm(config.n_embd)                                         # Final normalization 
         
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)                   # Project to vocabulary 
-        
-        
+ 
+
     def forward(self, idx: torch.Tensor, targets: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Forward pass through the model.
@@ -295,6 +294,13 @@ class GPTModel(nn.Module):
             loss = F.cross_entropy(logits_flat, targets_flat)
         
         return logits, loss
+    @classmethod
+    def from_pretrained(cls, model_type: str):
+        """
+        Loads the GPT-2 model weights from huggingface
+        """
+        # NOT IMPLEMENTED 
+        raise NotImplementedError("Loading from pretrained weights is not implemented in this example.")
     
     def generate(self, idx: torch.Tensor, max_new_tokens: int) -> torch.Tensor:
         """
