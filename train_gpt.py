@@ -77,7 +77,7 @@ config = GPTConfig(
             n_head=4,
             n_layer=3,
             dropout=0,
-            training_steps=1000,
+            training_steps=20000,
             learning_rate=1e-3,
             eval_iters=100,
             eval_interval=100,
@@ -99,98 +99,106 @@ print("DATA PREPARATION")
 print('='*60)
 tokenizer = char_level_tokenizer if config.selected_tokenizer == char_level_tokenizer.name else tiktoken_tokenizer
 
-def load_and_prepare_data() -> Tuple[torch.Tensor, torch.Tensor, int]:
-    """
-    Load text data, tokenize it, and split into train/validation sets.
-    
-    Returns:
-        train_data: Training data tensor
-        val_data: Validation data tensor
-        vocab_size: Size of vocabulary
-    """
-    
-    # Load text file
-    try:
-        with open(DATA_PATH, 'r', encoding='utf-8') as f:
-            text = f.read()
-    except FileNotFoundError:
-        raise FileNotFoundError(f"Data file not found: {DATA_PATH}")
-    
-    # Tokenize text using character-level tokenizer [TODO: Try tiktoken tokenizer]
-    text_ids = tokenizer.encode(text)
-    data = torch.tensor(text_ids, dtype=torch.long)
-    vocab_size = tokenizer.n_vocab
+class DataloaderLite:
+    def __init__(self, B,T) -> Tuple[torch.Tensor, torch.Tensor, int]:
+        self.batch_size = B
+        self.seq_size = T
+
+        # At init load tokens from disk and store them in memory
+        try:
+            with open(DATA_PATH, 'r', encoding='utf-8') as f:
+                text = f.read()
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Data file not found: {DATA_PATH}")
+        
+        tokens = tokenizer.encode(text)  # Encode the text into tokens
+        self.tokens = torch.tensor(tokens, dtype=torch.long)
+        print(f"loaded {len(self.tokens)} tokens")
+        print(f"1 epoch = {len(self.tokens)// (B*T)} batches")
+        
+        data = self.tokens
+        self.vocab_size = tokenizer.n_vocab
 
 
-    # Generate splits: train , val
-    split_idx = int(config.train_val_ratio * len(data)) 
-    train_data = data[:split_idx] # train split
-    val_data = data[split_idx:] # validation split
-    
+        # Generate splits: train , val
+        split_idx = int(config.train_val_ratio * len(data)) 
+        train_data = data[:split_idx] # train split
+        val_data = data[split_idx:] # validation split
+        
+        self.train_data = train_data
+        self.val_data = val_data
 
+        
+        data_preparation_summary = (
+            f"\nTokenziation summary:\n"
+            f"  Tokenizer: {tokenizer.name}\n"
+            f"  Tokenized text: {len(data):,} tokens\n"
+            f"  Vocabulary size: {tokenizer.n_vocab} unique tokens\n"
+            f"\nData split:\n"
+            f"  Training:   {len(train_data):,} tokens ({len(train_data)/len(data)*100:.1f}%)\n"
+            f"  Validation: {len(val_data):,} tokens ({len(val_data)/len(data)*100:.1f}%)\n"
+        )
+        print(data_preparation_summary)
+        
+        
     
-    data_preparation_summary = (
-        f"\nTokenziation summary:\n"
-        f"  Tokenizer: {tokenizer.name}\n"
-        f"  Tokenized text: {len(data):,} tokens\n"
-        f"  Vocabulary size: {vocab_size} unique tokens\n"
-        f"\nData split:\n"
-        f"  Training:   {len(train_data):,} tokens ({len(train_data)/len(data)*100:.1f}%)\n"
-        f"  Validation: {len(val_data):,} tokens ({len(val_data)/len(data)*100:.1f}%)\n"
-    )
-    print(data_preparation_summary)
+    # Batch generator
+    def next_batch(self, split_type)-> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Generate a batch of input-target pairs for training.
+            
+            How batching works:
+            - Sample random starting positions in the dataset
+            - Extract sequences of length seq_size starting from those positions
+            - Create targets by shifting input sequences by one position
+            
+            Example with seq_size=5, batch_size=2:
+                Input:  [[23, 30, 31, 7, 21], [45, 12, 8, 33, 9]]
+                Target: [[30, 31, 7, 21, 14], [12, 8, 33, 9, 41]]
+            
+            This gives us seq_size training examples per sequence:
+                - Predict 30 given [23]
+                - Predict 31 given [23, 30]
+                - Predict 7 given [23, 30, 31]
+                - etc.
+        """
+        data = self.train_data if split_type == "train" else self.val_data
 
-    return train_data, val_data, vocab_size
+        # Sample random starting indices for each sequence in the batch
+        starting_idx = torch.randint(
+            len(data) - self.seq_size,
+            (self.batch_size,)
+        ) 
+        
+        # Extract sequences and create targets
+        xb = torch.stack([
+            data[i:i+self.seq_size] 
+            for i in starting_idx
+        ]) 
+        # Shift the sequence by one to the right to create the target
+        yb = torch.stack([
+            data[i+1:i+self.seq_size+1] 
+            for i in starting_idx
+        ]) 
+        
+        # Move to compute device (GPU or CPU)
+        xb, yb = xb.to(device), yb.to(device) 
+        
+        return xb, yb
+
 
 # Load and prepare data
-train_data, val_data, vocab_size = load_and_prepare_data()
-config.vocab_size = vocab_size # Update config with vocabulary size
 
-# Batch generator
-def get_batch(split_type: str, batch_size: int, seq_size: int)-> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Generate a batch of input-target pairs for training.
-        
-        How batching works:
-        - Sample random starting positions in the dataset
-        - Extract sequences of length seq_size starting from those positions
-        - Create targets by shifting input sequences by one position
-        
-        Example with seq_size=5, batch_size=2:
-            Input:  [[23, 30, 31, 7, 21], [45, 12, 8, 33, 9]]
-            Target: [[30, 31, 7, 21, 14], [12, 8, 33, 9, 41]]
-        
-        This gives us seq_size training examples per sequence:
-            - Predict 30 given [23]
-            - Predict 31 given [23, 30]
-            - Predict 7 given [23, 30, 31]
-            - etc.
-    """
-    data = train_data if split_type == "train" else val_data
-    
-    # Sample random starting indices for each sequence in the batch
-    starting_idx = torch.randint(
-        len(data) - seq_size,
-        (batch_size,)
-    ) 
-    
-    # Extract sequences and create targets
-    xb = torch.stack([
-        data[i:i+seq_size] 
-        for i in starting_idx
-    ]) 
-    # Shift the sequence by one to the right to create the target
-    yb = torch.stack([
-        data[i+1:i+seq_size+1] 
-        for i in starting_idx
-    ]) 
-    
-    # Move to compute device (GPU or CPU)
-    xb, yb = xb.to(device), yb.to(device) 
-    
-    return xb, yb
+# Create dataloader instance
+train_loader = DataloaderLite(config.batch_size, config.seq_size)
 
+# Load and prepare data
+train_data = train_loader.train_data
+val_data = train_loader.val_data
+vocab_size = train_loader.vocab_size
 
+# Update config with actual vocab_size
+config.vocab_size = vocab_size
 
 # =============================================================================
 # MODEL INITIALIZATION
@@ -385,7 +393,7 @@ def estimate_loss():
     for split in ['train', 'val']:
         losses = torch.zeros(config.eval_iters)
         for k in range(config.eval_iters): 
-            X,Y = get_batch(split, batch_size=config.batch_size, seq_size=config.seq_size)
+            X,Y = train_loader.next_batch(split_type=split)
             _, loss = model(X,Y)
             losses[k] = loss.item()
         mean_losses[split] = losses.mean()
@@ -419,8 +427,8 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
     # TRAINING PHASE
 
     # Get a batch of training data
-    xb, yb = get_batch(split_type='train', batch_size=config.batch_size, seq_size=config.seq_size) # Sample a batch of data (this is a random batch from the train data)
-    
+    xb, yb = train_loader.next_batch(split_type='train')  # Sample a batch of data (this is a random batch from the train data)
+
     _, loss = model(xb, yb) # Forward pass
     optimizer.zero_grad() # Reset gradients
     loss.backward() # Backward pass
