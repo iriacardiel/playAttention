@@ -37,8 +37,8 @@ model.to('cuda')
 # =============================================================================
 # Context tokens
 context_text = "Hello, I'm a language model,"
-enc = tiktoken.get_encoding("gpt2")
-context_tokens = enc.encode(context_text)
+tokenizer = tiktoken.get_encoding("gpt2")
+context_tokens = tokenizer.encode(context_text)
 context_tokens = torch.tensor(context_tokens, dtype=torch.long) # 1, 8
 
 # Manually generating a batch with the same sequence context_tokens 5 times 
@@ -77,6 +77,6 @@ while idx.size(1) < max_new_tokens:
 # print the generated sequences
 for i in range(num_generated_sequences):
     generated_tokens = idx[i, :max_new_tokens].tolist() # Get the generated tokens for this sequence
-    generated_text = enc.decode(generated_tokens)  # Decode the tokens to text
+    generated_text = tokenizer.decode(generated_tokens)  # Decode the tokens to text
     print(f"Generated text {i+1}: <START>", colored(generated_text, "cyan"), "<END>")
 

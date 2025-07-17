@@ -12,10 +12,10 @@ class ModelConfig(BaseModel):
 class GPTConfig(ModelConfig):
 
     # Compute Device
-    compute_device: Any # Choose device: 'cpu' or 'cuda'
+    compute_device: str # Choose device: 'cpu' or 'cuda'
     
     # Tokenizer
-    tokenizer: Any # Choose tokenizer: tiktoken or char_level_tokenizer
+    selected_tokenizer: str # Choose tokenizer: "CharTokenizer" or "TiktokenGPT2"
     vocab_size: Optional[int] # Number of tokens in the vocabulary: (50000 BPE Merges + 256 Bytes tokens + 1 EOS token) for GPT-2, or 256 for char-level tokenizer, etc.
     
     # Model Architecture Parameters

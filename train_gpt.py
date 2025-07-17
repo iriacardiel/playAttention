@@ -27,13 +27,14 @@ import json
 torch.manual_seed(1337) 
 
 # Determine computation device (GPU or CPU)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
+compute_device = "cuda" if torch.cuda.is_available() else "cpu"
+device = torch.device(compute_device) 
 print(f"Training compute device --> {device}\n")
 
 # File paths
 TRAIN_ID = datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
 DATA_PATH = 'data/tinyshakespeare.txt'
-REPORT_DIR = f'reports/training_{TRAIN_ID}_{device.type}'
+REPORT_DIR = f'reports/training_{TRAIN_ID}_{compute_device}'
 # Create plots directory
 os.makedirs(REPORT_DIR, exist_ok=True)
 
@@ -42,8 +43,8 @@ os.makedirs(REPORT_DIR, exist_ok=True)
 # =============================================================================
 
 # config = GPTConfig(
-#             compute_device=device,
-#             tokenizer=char_level_tokenizer,
+#             compute_device=compute_device,
+#             selected_tokenizer="CharTokenizer",  # Use string to refer to the tokenizer
 #             vocab_size=None,  # Will be set after data preparation
 #             seq_size=256,
 #             batch_size=64,
@@ -59,8 +60,8 @@ os.makedirs(REPORT_DIR, exist_ok=True)
 #             )
 
 config = GPTConfig(
-            compute_device=device,
-            tokenizer=char_level_tokenizer,
+            compute_device=compute_device,
+            selected_tokenizer="CharTokenizer",  # Use string to refer to the tokenizer
             vocab_size=None,  # Will be set after data preparation
             seq_size=8,
             batch_size=32,
@@ -68,7 +69,7 @@ config = GPTConfig(
             n_head=4,
             n_layer=3,
             dropout=0,
-            training_steps=20000,
+            training_steps=1000,
             learning_rate=1e-3,
             eval_iters=100,
             eval_interval=100,
@@ -84,8 +85,8 @@ hyperparams_summary = (f""
     f"  seq_size        : {config.seq_size} tokens (max context length)\n"
     f"  batch_size      : {config.batch_size} sequences\n"
     f"  n_embd          : {config.n_embd} (embedding dimension)\n"
-    f"  n_head       : {config.n_head} heads\n"
-    f"  n_layer        : {config.n_layer} transformer blocks\n"
+    f"  n_head          : {config.n_head} heads\n"
+    f"  n_layer         : {config.n_layer} transformer blocks\n"
     f"  dropout         : {config.dropout}\n"
     f"\n\nTraining Parameters:\n"
     f"  training_steps  : {config.training_steps:,} steps\n"
@@ -104,6 +105,7 @@ print(hyperparams_summary)
 print(f"\n{'='*60}")
 print("DATA PREPARATION")
 print('='*60)
+tokenizer = char_level_tokenizer if config.selected_tokenizer == char_level_tokenizer.name else tiktoken_tokenizer
 
 def load_and_prepare_data() -> Tuple[torch.Tensor, torch.Tensor, int]:
     """
@@ -123,9 +125,9 @@ def load_and_prepare_data() -> Tuple[torch.Tensor, torch.Tensor, int]:
         raise FileNotFoundError(f"Data file not found: {DATA_PATH}")
     
     # Tokenize text using character-level tokenizer [TODO: Try tiktoken tokenizer]
-    text_ids = config.tokenizer.encode(text)
+    text_ids = tokenizer.encode(text)
     data = torch.tensor(text_ids, dtype=torch.long)
-    vocab_size = config.tokenizer.n_vocab
+    vocab_size = tokenizer.n_vocab
 
 
     # Generate splits: train , val
@@ -137,7 +139,7 @@ def load_and_prepare_data() -> Tuple[torch.Tensor, torch.Tensor, int]:
     
     data_preparation_summary = (
         f"\nTokenziation summary:\n"
-        f"  Tokenizer: {config.tokenizer.name}\n"
+        f"  Tokenizer: {tokenizer.name}\n"
         f"  Tokenized text: {len(data):,} tokens\n"
         f"  Vocabulary size: {vocab_size} unique tokens\n"
         f"\nData split:\n"
@@ -465,14 +467,14 @@ print(training_summary)
 # =============================================================================
 # Context tokens
 context_text = "\n"
-enc = config.tokenizer
-context_tokens = enc.encode(context_text)
+tokenizer
+context_tokens = tokenizer.encode(context_text)
 context_tokens = torch.tensor(context_tokens, dtype=torch.long)
 idx = context_tokens.to(device).unsqueeze(0)  # Shape becomes (1, seq_len)
 
 # Generate from context tokens
 generated_tokens = model.generate(idx, max_new_tokens=500)[0].tolist()
-generated_text = enc.decode(generated_tokens)
+generated_text = tokenizer.decode(generated_tokens)
 print("Generated text: <START>", colored(generated_text, "cyan"), "<END>")
     
 
@@ -506,9 +508,9 @@ report = f"""# Training Report
 |----------------------------------|----------------------------|-|-|-------------------------|--------------------------------------------------|-|-|----------------------|------------------------------------------------------------|
 | seq_size                       | `{config.seq_size}` tokens   | | | Total Parameters        | `{total_params:,}`                               | | | Dataset              | `{DATA_PATH}`                                              |
 | batch_size                     | `{config.batch_size}`        | | | Trainable Parameters    | `{trainable_params:,}`                           | | | Vocabulary Size      | `{vocab_size:,}` tokens                                    |
-| n_embd (dim)                   | `{config.n_embd}`            | | | Model Size              | ~`{total_params * 4 / 1024**2:.2f}` MB (float32)  | | | Dataset Size         | `{len(train_data) + len(val_data):,}` tokens               |
-| n_head                      | `{config.n_head}`         | | | Optimizer               | AdamW with learning rate `{config.learning_rate}`| | | Training Tokens      | `{len(train_data):,}` tokens ({config.train_val_ratio:.1%})|
-| n_layer                       | `{config.n_layer}`          | | | Tokenizer               | `{config.tokenizer.name}`                        | | | Validation Tokens    | `{len(val_data):,}` tokens ({1-config.train_val_ratio:.1%})|
+| n_embd (dim)                   | `{config.n_embd}`            | | | Model Size              | ~`{total_params * 4 / 1024**2:.2f}` MB (float32) | | | Dataset Size         | `{len(train_data) + len(val_data):,}` tokens               |
+| n_head                         | `{config.n_head}`            | | | Optimizer               | AdamW with learning rate `{config.learning_rate}`| | | Training Tokens      | `{len(train_data):,}` tokens ({config.train_val_ratio:.1%})|
+| n_layer                        | `{config.n_layer}`           | | | Tokenizer               | `{tokenizer.name}`                        | | | Validation Tokens    | `{len(val_data):,}` tokens ({1-config.train_val_ratio:.1%})|
 | dropout                        | `{config.dropout}`           | | |                         |                                                  | | |                      |                                                            |
 | training_steps                 | `{config.training_steps:,}`  | | |                         |                                                  | | |                      |                                                            |
 | learning_rate                  | `{config.learning_rate}`     | | |                         |                                                  | | |                      |                                                            |
@@ -524,8 +526,8 @@ with open(f'{REPORT_DIR}/report.md', 'w', encoding='utf-8') as f:
 # Save configuration as JSON
 with open(f'{REPORT_DIR}/config.json', 'w', encoding='utf-8') as f:
     config_dict = config.model_dump()
-    config_dict["compute_device"] = str(config_dict["compute_device"])
-    config_dict["tokenizer"] = config_dict["tokenizer"].name  # Store tokenizer name
+    config_dict["compute_device"] = compute_device
+    config_dict["selected_tokenizer"] = tokenizer.name 
     f.write(json.dumps(config_dict, indent = 2))
         
     
