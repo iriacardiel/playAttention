@@ -283,17 +283,16 @@ class GPTModel(nn.Module):
         # Linear layer to project the embeddings to the vocabulary size
         logits = self.lm_head(x) # (B,T,vocab_size)
         
-        # Calculate loss if targets provided (for training)
+        # Calculate loss if targets provided (for training). For inference, no need to calculate loss
         loss = None
-        # For inference, no need to calculate loss
         if targets is not None:
-            # Reshaping for the loss
             B, T, C = logits.shape
             logits_flat = logits.view(B * T, C)
             targets_flat = targets.view(B * T)
             loss = F.cross_entropy(logits_flat, targets_flat)
         
         return logits, loss
+    
     @classmethod
     def from_pretrained(cls, model_type: str):
         """

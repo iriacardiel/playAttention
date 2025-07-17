@@ -189,7 +189,7 @@ class GPT2Model(nn.Module):
         )) # Stack of n_layer transformer blocks
         
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)                   # Project to vocabulary 
-    def forward(self, idx: torch.Tensor):
+    def forward(self, idx: torch.Tensor, targets:torch.Tensor = None) -> torch.Tensor:
         """
         Forward pass through the model.
         
@@ -218,9 +218,16 @@ class GPT2Model(nn.Module):
         
         # Linear layer to project the embeddings to the vocabulary size
         logits = self.lm_head(x) # (B,T,vocab_size)
-        
-        return logits
     
+        # Calculate loss if targets provided (for training). For inference, no need to calculate loss
+        loss = None
+        if targets is not None:
+            logits_flat = logits.view(-1, self.config.vocab_size)
+            targets_flat = targets.view(-1)
+            loss = F.cross_entropy(logits_flat, targets_flat)
+        
+        return logits, loss
+
     @classmethod
     def from_pretrained(cls, model_type: str):
         """

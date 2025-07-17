@@ -24,12 +24,20 @@ import json
 # =============================================================================
 
 # For reproducibility
-torch.manual_seed(1337) 
+seed = 1337
+torch.manual_seed(seed) 
+torch.cuda.manual_seed(seed)
 
 # Determine computation device (GPU or CPU)
-compute_device = "cuda" if torch.cuda.is_available() else "cpu"
-device = torch.device(compute_device) 
-print(f"Training compute device --> {device}\n")
+compute_device = "cpu"
+if torch.cuda.is_available():
+    compute_device = "cuda"
+elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+    compute_device = "mps"
+    
+print("Using device:", compute_device)
+
+device = torch.device(compute_device)
 
 # File paths
 TRAIN_ID = datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
@@ -42,22 +50,22 @@ os.makedirs(REPORT_DIR, exist_ok=True)
 # HYPERPARAMETERS
 # =============================================================================
 
-# config = GPTConfig(
-#             compute_device=compute_device,
-#             selected_tokenizer="CharTokenizer",  # Use string to refer to the tokenizer
-#             vocab_size=None,  # Will be set after data preparation
-#             seq_size=256,
-#             batch_size=64,
-#             n_embd=384,
-#             n_head=6,
-#             n_layer=6,
-#             dropout=0.2,
-#             training_steps=5000,
-#             learning_rate=3e-4,
-#             eval_iters=100,
-#             eval_interval=100, 
-#             train_val_ratio=0.9
-#             )
+"""config = GPTConfig(
+            compute_device=compute_device,
+            selected_tokenizer="CharTokenizer",  # Use string to refer to the tokenizer
+            vocab_size=None,  # Will be set after data preparation
+            seq_size=256,
+            batch_size=64,
+            n_embd=384,
+            n_head=6,
+            n_layer=6,
+            dropout=0.2,
+            training_steps=5000,
+            learning_rate=3e-4,
+            eval_iters=100,
+            eval_interval=100, 
+            train_val_ratio=0.9
+            )"""
 
 config = GPTConfig(
             compute_device=compute_device,
@@ -76,27 +84,11 @@ config = GPTConfig(
             train_val_ratio=0.9
             )
 
+
 print(f"\n{'='*60}")
 print("HYPERPARAMETERS")
 print('='*60)
-
-hyperparams_summary = (f""
-    f"\nModel Architecture:\n"
-    f"  seq_size        : {config.seq_size} tokens (max context length)\n"
-    f"  batch_size      : {config.batch_size} sequences\n"
-    f"  n_embd          : {config.n_embd} (embedding dimension)\n"
-    f"  n_head          : {config.n_head} heads\n"
-    f"  n_layer         : {config.n_layer} transformer blocks\n"
-    f"  dropout         : {config.dropout}\n"
-    f"\n\nTraining Parameters:\n"
-    f"  training_steps  : {config.training_steps:,} steps\n"
-    f"  learning_rate   : {config.learning_rate}\n"
-    f"  eval_iters      : {config.eval_iters} batches\n"
-    f"  eval_interval   : {config.eval_interval} steps\n"
-    f"  train_val_ratio : {config.train_val_ratio}\n"
-)
-
-print(hyperparams_summary)
+print(config.model_dump_json(indent=2))  # Print the configuration in JSON format
 
 
 # =============================================================================
@@ -219,9 +211,6 @@ model = GPTModel(config).to(device)
 total_params = sum(p.numel() for p in model.parameters())
 trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
 
-# Initialize optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr = config.learning_rate) 
-
 model_summary = (
     f"\nModel Details:\n"
     f"  Architecture: GPT-style Transformer\n"
@@ -242,11 +231,7 @@ print(model_summary)
 for k, v in model.state_dict().items():
     print(colored(f"{k}: {v.shape} - {v.dtype}", "green"))  # Print each parameter's shape and dtype
 
-# =============================================================================
-# TRAINING 
-# =============================================================================
-           
-print("Training the model...")
+
 
 # =============================================================================
 # TRAINING UTILITIES
@@ -409,7 +394,7 @@ def estimate_loss():
 
 
 # =============================================================================
-# TRAINING LOOP
+# TRAINING 
 # =============================================================================
 print(f"\n{'='*60}")
 print("TRAINING")
@@ -421,6 +406,9 @@ print(f"\nStarting training loop...")
 
 start_train = datetime.now() # Record start time of training
 # In each time step a different batch is sampled randomly with 32 sequences of 8 tokens
+
+# Initialize optimizer
+optimizer = torch.optim.AdamW(model.parameters(), lr = config.learning_rate) 
 for step in trange(config.training_steps, desc="Training steps", unit="step", disable=False):
     # EVALUATION PHASE
     if step % config.eval_interval == 0: # Every eval_interval steps pause training and evaluate the mean loss on train and val sets on eval_iters batches
@@ -433,15 +421,10 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
     # Get a batch of training data
     xb, yb = get_batch(split_type='train', batch_size=config.batch_size, seq_size=config.seq_size) # Sample a batch of data (this is a random batch from the train data)
     
-    # Forward pass: compute model output and loss
     _, loss = model(xb, yb) # Forward pass
-    
-    # Backward pass: compute gradients
-    optimizer.zero_grad(set_to_none=True) # Clear previous gradients
-    loss.backward() # Compute gradients via backpropagation
-    
-    # Update model parameters
-    optimizer.step() # Update model weights
+    optimizer.zero_grad() # Reset gradients
+    loss.backward() # Backward pass
+    optimizer.step() # Update weights
 
 # Estimate loss after the last training step
 # This is to ensure the final losses are recorded even if the last step is not an evaluation 
