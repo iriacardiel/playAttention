@@ -39,7 +39,7 @@ To follow
 | n_layer                       | `3`          | | | Tokenizer               | `CharTokenizer`                        | | | Validation Tokens    | `111,540` tokens (10.0%)|
 | dropout                        | `0.0`           | | |                         |                                                  | | |                      |                                                            |
 | training_steps                 | `20,000`  | | |                         |                                                  | | |                      |                                                            |
-| learning_rate                  | `0.001`     | | |                         |                                                  | | |                      |                                                            |
+| lr                  | `0.001`     | | |                         |                                                  | | |                      |                                                            |
 | eval_interval                  | `100`     | | |                         |                                                  | | |                      |                                                            |
 | eval_iters                     | `100`        | | |                         |                                                  | | |                      |                                                            |
 

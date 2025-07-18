@@ -208,16 +208,16 @@ def get_lr(step: int, config: ModelConfig) -> float:
     
     Uses a cosine decay schedule with warmup.
     """
-    max_lr = config.learning_rate  # Maximum learning rate
+    max_lr = config.lr  # Maximum learning rate
     min_lr = max_lr * 0.1  # Minimum learning rate (10% of max)
-    warmup_steps = config.warmup_steps  # Number of warmup steps
+    lr_warmup_steps = config.lr_warmup_steps  # Number of warmup steps
     total_steps = config.training_steps  # Total training steps
     # (1) warmup
-    if step < warmup_steps:
-        return max_lr * (step+1) / warmup_steps  # Linear warmup
+    if step < lr_warmup_steps:
+        return max_lr * (step+1) / lr_warmup_steps  # Linear warmup
     # (2) decay
-    elif step >= warmup_steps and step <= total_steps and config.learning_rate_decay:
-        decay_ratio = (step - warmup_steps) / (total_steps - warmup_steps)
+    elif step >= lr_warmup_steps and step <= total_steps and config.lr_decay:
+        decay_ratio = (step - lr_warmup_steps) / (total_steps - lr_warmup_steps)
         assert 0 <= decay_ratio <= 1
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
         return min_lr + coeff * (max_lr - min_lr)
@@ -504,11 +504,11 @@ report = f"""# Training Report
 | seq_size                       | `{config.seq_size}` tokens   | | | Total Parameters        | `{total_params:,}`                               | | | Dataset              | `{DATA_PATH}`                                                           |
 | batch_size                     | `{config.batch_size}`        | | | Trainable Parameters    | `{trainable_params:,}`                           | | | Dataset Size         | `{len(train_loader.train_data) + len(train_loader.val_data):,}` tokens  |
 | n_embd (dim)                   | `{config.n_embd}`            | | | Model Size              | ~`{total_params * 4 / 1024**2:.2f}` MB (float32) | | | Training Tokens      | `{len(train_loader.train_data):,}` tokens ({config.train_val_ratio:.1%})|
-| n_head                         | `{config.n_head}`            | | | Optimizer               | AdamW with learning rate `{config.learning_rate}`| | | Validation Tokens    | `{len(train_loader.val_data):,}` tokens ({1-config.train_val_ratio:.1%})|
+| n_head                         | `{config.n_head}`            | | | Optimizer               | AdamW with learning rate `{config.lr}`| | | Validation Tokens    | `{len(train_loader.val_data):,}` tokens ({1-config.train_val_ratio:.1%})|
 | n_layer                        | `{config.n_layer}`           | | | Tokenizer               | `{tokenizer.name}`                               | | |                      |                                                                         |
 | dropout                        | `{config.dropout}`           | | | Vocabulary Size         | `{tokenizer.n_vocab:,}` tokens                | | |                      |                                                                         |
 | training_steps                 | `{config.training_steps:,}`  | | |                         |                                                  | | |                      |                                                                         |
-| learning_rate                  | `{config.learning_rate}`     | | |                         |                                                  | | |                      |                                                                         |
+| lr                  | `{config.lr}`     | | |                         |                                                  | | |                      |                                                                         |
 | eval_interval                  | `{config.eval_interval}`     | | |                         |                                                  | | |                      |                                                                         |
 | eval_iters                     | `{config.eval_iters}`        | | |                         |                                                  | | |                      |                                                                         |
 

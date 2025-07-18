@@ -204,16 +204,16 @@ def get_lr(step: int, config: ModelConfig) -> float:
     
     Uses a cosine decay schedule with warmup.
     """
-    max_lr = config.learning_rate  # Maximum learning rate
+    max_lr = config.lr  # Maximum learning rate
     min_lr = max_lr * 0.1  # Minimum learning rate (10% of max)
-    warmup_steps = config.warmup_steps  # Number of warmup steps
+    lr_warmup_steps = config.lr_warmup_steps  # Number of warmup steps
     total_steps = config.training_steps  # Total training steps
     # (1) warmup
-    if step < warmup_steps:
-        return max_lr * (step+1) / warmup_steps  # Linear warmup
+    if step < lr_warmup_steps:
+        return max_lr * (step+1) / lr_warmup_steps  # Linear warmup
     # (2) decay
-    elif step >= warmup_steps and step <= total_steps and config.learning_rate_decay:
-        decay_ratio = (step - warmup_steps) / (total_steps - warmup_steps)
+    elif step >= lr_warmup_steps and step <= total_steps and config.lr_decay:
+        decay_ratio = (step - lr_warmup_steps) / (total_steps - lr_warmup_steps)
         assert 0 <= decay_ratio <= 1
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
         return min_lr + coeff * (max_lr - min_lr)

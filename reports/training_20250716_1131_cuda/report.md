@@ -92,7 +92,7 @@ Fly, Clifford, thou can
 | n_layer                       | `6`          | | | Tokenizer               | `TiktokenGPT2`                        | | | Validation Tokens    | `33,803` tokens (10.0%)|
 | dropout                        | `0.2`           | | |                         |                                                  | | |                      |                                                            |
 | training_steps                 | `5,000`  | | |                         |                                                  | | |                      |                                                            |
-| learning_rate                  | `0.0003`     | | |                         |                                                  | | |                      |                                                            |
+| lr                  | `0.0003`     | | |                         |                                                  | | |                      |                                                            |
 | eval_interval                  | `100`     | | |                         |                                                  | | |                      |                                                            |
 | eval_iters                     | `100`        | | |                         |                                                  | | |                      |                                                            |
 

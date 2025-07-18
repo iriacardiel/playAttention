@@ -3,9 +3,9 @@ Model Configurations
 =====================================
 """
 
-from typing import Optional, Any
+from typing import Optional
 from pydantic import BaseModel
-from dataclasses import dataclass
+
 class ModelConfig(BaseModel):
     pass
 
@@ -26,36 +26,23 @@ class GPTConfig(ModelConfig):
     n_layer : int = 3 # Number of transformer blocks
     dropout : float = 0  # Dropout rate for regularization (to avoid overfitting)
 
+    macro_batch_size: int = None # New! Macro batch size for training. Set to none to disable macro batching. If set, it will be used to accumulate gradients over multiple batches before updating the model weights.
+
     # Training Parameters
     training_steps : int = 2000 # Number of training steps
-    learning_rate : float = 1e-3 # Lower if the model is bigger, higher if the model is smaller. 
-    warmup_steps: int = 0 # New! Number of warmup steps for the learning rate scheduler  
-    learning_rate_decay: bool = False # New! Whether to decay the learning rate during training
+    lr : float = 1e-3 # Lower if the model is bigger, higher if the model is smaller. 
+    lr_warmup_steps: int = 0 # New! Number of warmup steps for the learning rate scheduler  
+    lr_decay: bool = False # New! Whether to decay the learning rate during training
     gradient_clipping: bool = False # New! Whether to clip gradients to stabilize training and avoid exploding gradients
     beta1: float = 0.9 # New! Beta1 for AdamW optimizer
     beta2: float = 0.999 # New! Beta2 for AdamW optimizer
     eps: float  = 1e-8 # New! Epsilon for AdamW optimizer
     weight_decay: float = 0 # New! Weight decay for AdamW optimizer: default is 0.1, but set to 0 to avoid regularization in small models
+    
+    # Evaluation Parameters
     eval_iters : int  = 100  # Number of batches to evaluate the loss on train and val splits
     eval_interval : int = 100  # Number of training steps between evaluations
     train_val_ratio : float = 0.9 # Ratio of training to validation data, e.g., 0.9 means 90% training and 10% validation
-
-"""config = GPTConfig(
-            compute_device=compute_device,
-            selected_tokenizer="CharTokenizer",  # Use string to refer to the tokenizer
-            vocab_size=None,  # Will be set after data preparation
-            seq_size=256,
-            batch_size=64,
-            n_embd=384,
-            n_head=6,
-            n_layer=6,
-            dropout=0.2,
-            training_steps=5000,
-            learning_rate=3e-4,
-            eval_iters=100,
-            eval_interval=100, 
-            train_val_ratio=0.9
-            )"""
             
             
 class GPT2Config(ModelConfig):
@@ -74,16 +61,20 @@ class GPT2Config(ModelConfig):
     flash_attention: bool = True # New! Use flash attention if available
     n_layer: int = 12 # Number of transformer blocks
     n_embd: int = 768 # Embedding dimension (size of the hidden states)
-    
-    macro_batch_size: int = 524288 # New! Macro batch size for training, e.g., 2**19  approx. 0.5M like in the paper
+    dropout : float = 0  # Dropout rate for regularization (to avoid overfitting) TODO: NOT IMPLENTED YET
+
+    macro_batch_size: int = 524288 # New! Macro batch size for training. Set to none to disable macro batching. If set, it will be used to accumulate gradients over multiple batches before updating the model weights.
     
     # Training Parameters
     training_steps : int = 100 # Number of training steps
-    learning_rate : float = 6e-4 # Lower if the model is bigger, higher if the model is smaller.
-    warmup_steps: int = 10 # New! Number of warmup steps for the learning rate scheduler  
-    learning_rate_decay: bool = True # New! Whether to decay the learning rate during training
+    lr : float = 6e-4 # Lower if the model is bigger, higher if the model is smaller.
+    lr_warmup_steps: int = 10 # New! Number of warmup steps for the learning rate scheduler  
+    lr_decay: bool = True # New! Whether to decay the learning rate during training
     gradient_clipping: bool = True # New! Whether to clip gradients to stabilize training and avoid exploding gradients
     beta1: float = 0.9 # New! Beta1 for AdamW optimizer: default is 0.9
     beta2: float = 0.95 # New! Beta2 for AdamW optimizer: default is 0.999
     eps: float  = 1e-8 # New! Epsilon for AdamW optimizer: default is 1e-8
     weight_decay: float = 0.1 # New! Weight decay for AdamW optimizer: default is 0.1, but set to 0 to avoid regularization in small models
+    
+    # Evaluation Parameters
+    # TODO
