@@ -29,6 +29,13 @@ class GPTConfig(ModelConfig):
     # Training Parameters
     training_steps : int = 2000 # Number of training steps
     learning_rate : float = 1e-3 # Lower if the model is bigger, higher if the model is smaller. 
+    warmup_steps: int = 0 # New! Number of warmup steps for the learning rate scheduler  
+    learning_rate_decay: bool = False # New! Whether to decay the learning rate during training
+    gradient_clipping: bool = False # New! Whether to clip gradients to stabilize training and avoid exploding gradients
+    beta1: float = 0.9 # New! Beta1 for AdamW optimizer
+    beta2: float = 0.999 # New! Beta2 for AdamW optimizer
+    eps: float  = 1e-8 # New! Epsilon for AdamW optimizer
+    weight_decay: float = 0 # New! Weight decay for AdamW optimizer: default is 0.1, but set to 0 to avoid regularization in small models
     eval_iters : int  = 100  # Number of batches to evaluate the loss on train and val splits
     eval_interval : int = 100  # Number of training steps between evaluations
     train_val_ratio : float = 0.9 # Ratio of training to validation data, e.g., 0.9 means 90% training and 10% validation
@@ -74,7 +81,9 @@ class GPT2Config(ModelConfig):
     training_steps : int = 100 # Number of training steps
     learning_rate : float = 6e-4 # Lower if the model is bigger, higher if the model is smaller.
     warmup_steps: int = 10 # New! Number of warmup steps for the learning rate scheduler  
-    beta1: float = 0.9 # New! Beta1 for AdamW optimizer
-    beta2: float = 0.95 # New! Beta2 for AdamW optimizer
-    eps: float  = 1e-8 # New! Epsilon for AdamW optimizer
-    weight_decay: float = 0.1 # New! Weight decay for AdamW optimizer
+    learning_rate_decay: bool = True # New! Whether to decay the learning rate during training
+    gradient_clipping: bool = True # New! Whether to clip gradients to stabilize training and avoid exploding gradients
+    beta1: float = 0.9 # New! Beta1 for AdamW optimizer: default is 0.9
+    beta2: float = 0.95 # New! Beta2 for AdamW optimizer: default is 0.999
+    eps: float  = 1e-8 # New! Epsilon for AdamW optimizer: default is 1e-8
+    weight_decay: float = 0.1 # New! Weight decay for AdamW optimizer: default is 0.1, but set to 0 to avoid regularization in small models

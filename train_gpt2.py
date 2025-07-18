@@ -19,9 +19,8 @@ from custom_tokenizers import tiktoken_tokenizer, char_level_tokenizer
 import torch
 from torch.nn import functional as F
 
-from Config import GPT2Config
+from Config import GPTConfig, GPT2Config, ModelConfig
 from model_gpt2 import GPT2Model
-
 
 
 # =============================================================================
@@ -53,7 +52,6 @@ PRETRAINED = False  # Set to False if you want to use randomly initialized weigh
 # New! Set high precision for matmul operations TF32: This will be faster on GPUs with Tensor Cores
 torch.set_float32_matmul_precision('high') if TENSOR_CORES else None
 
-
 # File paths
 TRAIN_ID = datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
 DATA_PATH = 'data/tinyshakespeare.txt'
@@ -62,7 +60,6 @@ DATA_PATH = 'data/tinyshakespeare.txt'
 # =============================================================================
 
 config = GPT2Config(compute_device=compute_device)
-
 
 print("HYPERPARAMETERS")
 
@@ -75,7 +72,8 @@ print(config.model_dump_json(indent=2))  # Print the configuration in JSON forma
 
 print("DATA PREPARATION")
 
-tokenizer = tiktoken_tokenizer
+tokenizer = char_level_tokenizer if config.selected_tokenizer == char_level_tokenizer.name else tiktoken_tokenizer
+config.vocab_size = tokenizer.n_vocab  if config.vocab_size is None else config.vocab_size # Set vocabulary size based on the tokenizer if it is not provided in the config
 class DataLoaderLite:
     def __init__(self, B, T):
         self.batch_size = B
@@ -95,8 +93,7 @@ class DataLoaderLite:
         
         self.vocab_size = tokenizer.n_vocab
 
-        # state
-        self.current_position = 0
+        self.current_position = 0 # state
         
         data_preparation_summary = (
             f"\nTokenziation summary:\n"
@@ -106,7 +103,8 @@ class DataLoaderLite:
         )
         
         print(data_preparation_summary)
-        
+    
+    # Batch generator
     def next_batch(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Generate a batch of input-target pairs for training.
@@ -142,12 +140,11 @@ class DataLoaderLite:
         
         return xb, yb  
 
-# Macro batch: 
+# New! Macro batch: We will repeat the forward - backward grad_accumulation_steps times to simulate a larger batch size. We will call this micro-step.
 macro_batch_size = 2*config.batch_size * config.seq_size #config.macro_batch_size # 2**19  approx. 0.5M like in the paper
 total_batch_size = config.batch_size * config.seq_size
 assert macro_batch_size % total_batch_size == 0, "macro_batch_size must be divisible by total_batch_size"
 grad_accumulation_steps = macro_batch_size // total_batch_size
-# We will repeat the forward - backward grad_accumulation_steps times to simulate a larger batch size. We will call this micro-step.
 
 # Create dataloader instance
 train_loader = DataLoaderLite(B=config.batch_size, T=config.seq_size)
@@ -181,7 +178,6 @@ model_summary = (
     f"  Total parameters: {total_params:,}\n"
     f"  Trainable parameters: {trainable_params:,}\n"
     f"  Model size: ~{model_size:.2f} MB (float32)\n"
-    f"\n\nOptimizer: AdamW with learning rate {config.learning_rate}\n"
 )
 
 print(model_summary)
@@ -196,14 +192,13 @@ print(model_summary)
 #     print(colored(f"{k}: {v.shape} - {v.dtype}", "green"))  # Print each parameter's shape and dtype
 
 
-# =============================================================================
-# TRAINING 
-# =============================================================================
 
-print("TRAINING")
+# =============================================================================
+# TRAINING UTILITIES
+# =============================================================================
 
 # New! Learning rate scheduler function
-def get_lr(step: int, config: GPT2Config) -> float:
+def get_lr(step: int, config: ModelConfig) -> float:
     """
     Get the learning rate for the current training step.
     
@@ -217,7 +212,7 @@ def get_lr(step: int, config: GPT2Config) -> float:
     if step < warmup_steps:
         return max_lr * (step+1) / warmup_steps  # Linear warmup
     # (2) decay
-    elif step >= warmup_steps and step <= total_steps:
+    elif step >= warmup_steps and step <= total_steps and config.learning_rate_decay:
         decay_ratio = (step - warmup_steps) / (total_steps - warmup_steps)
         assert 0 <= decay_ratio <= 1
         coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
@@ -225,26 +220,27 @@ def get_lr(step: int, config: GPT2Config) -> float:
     # (3) after training
     else: 
         return min_lr
-    
-    
-    
-start_train_loop = datetime.now() # Record start time of training
-# Initialize optimizer
-#optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, betas=(config.beta1, config.beta2), eps=config.eps) # New! Use AdamW optimizer with beta1, beta2 and epsilon parameters for better convergence
-optimizer = model.configure_optimizers(config, device_type=compute_device)
-# Initialize lists to store metrics for plotting
-losses_accumulated = []
-lrs = []
-norms = []
-durations = []
-tokens_per_sec = []
 
+# =============================================================================
+# TRAINING 
+# =============================================================================
+
+print("TRAINING")
+
+
+# Initialize lists to store metrics for plotting
+losses_accumulated, lrs, norms, durations, tokens_per_sec = [], [], [], [], []
+
+# Initialize optimizer
+optimizer = model.configure_optimizers(config, device_type=compute_device)
+
+start_train_loop = datetime.now() # Record start time of training
 for step in range(config.training_steps):
-    
-    t0 = time.time()
+    # EVALUATION PHASE
+    # TODO
     
     # TRAINING PHASE
-
+    t0 = time.time()
     optimizer.zero_grad() # Reset gradients
 
     # New! Simulate larger batch size by repeating the forward - backward grad_accumulation_steps times
@@ -263,20 +259,20 @@ for step in range(config.training_steps):
         loss = loss / grad_accumulation_steps # Important step to keep the loss the same even when we accumulate gradients over multiple micro-steps
         loss_accumulation += loss.detach()  # Accumulate loss over micro-steps
         loss.backward() # Backward pass
-    
+
+
     # New! Clipping gradients to stabilize training and avoid exploding gradients
-    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) 
-    
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) if config.gradient_clipping else None
     # New! Determine and set the learning rate for this step
     lr = get_lr(step, config)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
-        
-    optimizer.step() # Update weights
 
+    optimizer.step() # Update weights
     torch.cuda.synchronize() if compute_device == "cuda" else None  # Synchronize for accurate timing
     t1 = time.time()
     duration = t1 - t0
+
     tokens_processed = train_loader.batch_size * train_loader.seq_size * grad_accumulation_steps  # Total tokens processed in this step
     tokens_per_second = tokens_processed / duration
 
@@ -290,7 +286,8 @@ for step in range(config.training_steps):
     print(f"Step {step+1:03d} | Loss accum: {loss_accumulation:.4} | lr: {lr:.4e} | norm: {norm:.4e} | dt: {duration:.4}s | Tokens/sec: {tokens_per_second}")
 
 end_train_loop = datetime.now() # Record start time of training
-print(f"\nTraining completed in {end_train_loop - start_train_loop} (HH:MM:SS)")
+total_time = end_train_loop - start_train_loop
+print(f"\nTraining completed in {total_time} (HH:MM:SS)")
 
 # Save plots to files
 plt.figure(figsize=(20, 12))

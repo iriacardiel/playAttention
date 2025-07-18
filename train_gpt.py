@@ -3,6 +3,7 @@ Training Script
 =====================================
 """
 
+import math
 import os
 import csv
 import json
@@ -18,7 +19,7 @@ from custom_tokenizers import tiktoken_tokenizer, char_level_tokenizer
 import torch
 from torch.nn import functional as F
 
-from Config import GPTConfig
+from Config import GPTConfig, GPT2Config, ModelConfig
 from model_gpt import GPTModel
 
 
@@ -42,6 +43,15 @@ print("Using device:", compute_device)
 
 device = torch.device(compute_device)
 
+# GPU Settings
+TENSOR_CORES = True  # Set to True to enable Tensor Cores for faster matrix multiplications on supported GPUs
+TORCH_COMPILATION = True  # Set to True to enable PyTorch 2.0's compile feature for performance optimization
+AUTOCAST = True  # Set to True to enable mixed precision training with autocast for performance optimization
+PRETRAINED = False  # Set to False if you want to use randomly initialized weights
+
+# New! Set high precision for matmul operations TF32: This will be faster on GPUs with Tensor Cores
+torch.set_float32_matmul_precision('high') if TENSOR_CORES else None
+
 # File paths
 TRAIN_ID = datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
 DATA_PATH = 'data/tinyshakespeare.txt'
@@ -53,7 +63,6 @@ os.makedirs(REPORT_DIR, exist_ok=True)
 # =============================================================================
 
 config = GPTConfig(compute_device=compute_device)
-
 
 print("HYPERPARAMETERS")
 
@@ -67,7 +76,7 @@ print(config.model_dump_json(indent=2))  # Print the configuration in JSON forma
 print("DATA PREPARATION")
 
 tokenizer = char_level_tokenizer if config.selected_tokenizer == char_level_tokenizer.name else tiktoken_tokenizer
-config.vocab_size = tokenizer.n_vocab  # Set vocabulary size based on the tokenizer
+config.vocab_size = tokenizer.n_vocab  if config.vocab_size is None else config.vocab_size # Set vocabulary size based on the tokenizer if it is not provided in the config
 class DataLoaderLite:
     def __init__(self, B, T):
         self.batch_size = B
@@ -108,8 +117,6 @@ class DataLoaderLite:
         )
         
         print(data_preparation_summary)
-        
-        
     
     # Batch generator
     def next_batch(self, split_type: str) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -158,17 +165,23 @@ print("MODEL INITIALIZATION")
 model = GPTModel(config)
 model.to(device) # this only works for the model, for tensors do tensor = tensor.to(device)
 
+# New! https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html 
+# Speed ups the model with PyTorch 2.0's compile feature (optional, but recommended for performance). 
+# Speedup mainly comes from reducing Python overhead and GPU read/writes, and so the observed speedup 
+# may vary on factors such as model architecture and batch size
+model = torch.compile(model) if TORCH_COMPILATION else model 
+
 # Count model parameters
 total_params = sum(p.numel() for p in model.parameters())
 trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+model_size = total_params * 4 / 1024**2  # Size in MB (assuming float32, 4 bytes per parameter)
 
 model_summary = (
     f"\nModel Details:\n"
     f"  Architecture: GPT-style Transformer\n"
     f"  Total parameters: {total_params:,}\n"
     f"  Trainable parameters: {trainable_params:,}\n"
-    f"  Model size: ~{total_params * 4 / 1024**2:.2f} MB (float32)\n" # asu
-    f"\n\nOptimizer: AdamW with learning rate {config.learning_rate}\n"
+    f"  Model size: ~{model_size:.2f} MB (float32)\n"
 )
 
 print(model_summary)
@@ -179,16 +192,39 @@ print(model_summary)
 # Option 1
 #print(colored(model, "green"))
 # Option 2
-# for k, v in model.state_dict().items():
-#     print(colored(f"{k}: {v.shape} - {v.dtype}", "green"))  # Print each parameter's shape and dtype
+for k, v in model.state_dict().items():
+    print(colored(f"{k}: {v.shape} - {v.dtype}", "green"))  # Print each parameter's shape and dtype
 
 
 
 # =============================================================================
 # TRAINING UTILITIES
 # =============================================================================
-        
-        
+
+# New! Learning rate scheduler function
+def get_lr(step: int, config: ModelConfig) -> float:
+    """
+    Get the learning rate for the current training step.
+    
+    Uses a cosine decay schedule with warmup.
+    """
+    max_lr = config.learning_rate  # Maximum learning rate
+    min_lr = max_lr * 0.1  # Minimum learning rate (10% of max)
+    warmup_steps = config.warmup_steps  # Number of warmup steps
+    total_steps = config.training_steps  # Total training steps
+    # (1) warmup
+    if step < warmup_steps:
+        return max_lr * (step+1) / warmup_steps  # Linear warmup
+    # (2) decay
+    elif step >= warmup_steps and step <= total_steps and config.learning_rate_decay:
+        decay_ratio = (step - warmup_steps) / (total_steps - warmup_steps)
+        assert 0 <= decay_ratio <= 1
+        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
+        return min_lr + coeff * (max_lr - min_lr)
+    # (3) after training
+    else: 
+        return min_lr
+    
 def train_val_loss_plot(train_losses: list, val_losses: list, steps_recorded: list):
     step = steps_recorded[-1] if steps_recorded else 0  # Get the last recorded step
     
@@ -213,8 +249,9 @@ def pwe_plot(model: GPTModel, step: int, starting_limits: tuple = (None, None)):
     """
     Plot the position embeddings of the model.
     """
+    layer_prefix = "_orig_mod." if TORCH_COMPILATION else ""
     layer_name = "wpe"
-    weights = model.state_dict()[f"{layer_name}.weight"].cpu().detach().numpy()
+    weights = model.state_dict()[f"{layer_prefix}{layer_name}.weight"].cpu().detach().numpy()
 
     if starting_limits == (None, None):
         starting_limits = (weights.min(), weights.max())
@@ -260,8 +297,9 @@ def ffn_weight_plot(model: GPTModel, step: int, starting_limits: tuple):
     """
     Plot the FFN first-layer weights of the first transformer block.
     """
+    layer_prefix = "_orig_mod." if TORCH_COMPILATION else ""
     layer_name = "transformer_blocks.0.mlp.c_fc"
-    weights = model.state_dict()[f"{layer_name}.weight"].cpu().detach().numpy()
+    weights = model.state_dict()[f"{layer_prefix}{layer_name}.weight"].cpu().detach().numpy()
     
     if starting_limits == (None, None):
         starting_limits = (weights.min(), weights.max())
@@ -351,35 +389,51 @@ def estimate_loss():
 print("TRAINING")
 
 
-# Initialize lists to store losses for plotting and logging
+# Initialize lists to store metrics for plotting
 train_losses, val_losses, steps_recorded, final_losses = [], [], [], {}
+losses_accumulated, lrs, norms, durations, tokens_per_sec = [], [], [], [], []
 
-
-start_train = datetime.now() # Record start time of training
 # Initialize optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
+optimizer = model.configure_optimizers(config, device_type=compute_device)
+
+start_train_loop = datetime.now() # Record start time of training
 for step in trange(config.training_steps, desc="Training steps", unit="step", disable=False):
     # EVALUATION PHASE
     if step % config.eval_interval == 0: # Every eval_interval steps pause training and evaluate the mean loss on train and val sets on eval_iters batches
-        
         losses = estimate_loss()
         starting_limits_ffn, starting_limits_pwe = update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model, starting_limits_ffn, starting_limits_pwe)
     
-    t0 = time.time()
     # TRAINING PHASE
+    t0 = time.time()
+    optimizer.zero_grad() # Reset gradients
 
     # Sample a batch random of training data
     xb, yb = train_loader.next_batch(split_type='train')
 
-    logits, loss = model(xb, yb) # Forward pass
-    optimizer.zero_grad() # Reset gradients
+    if AUTOCAST:
+            with torch.autocast(device_type=compute_device, dtype=torch.bfloat16 if compute_device == "cuda" else torch.float32): 
+                logits, loss = model(xb, yb)
+    else:
+        logits, loss = model(xb, yb) # Forward pass
     loss.backward() # Backward pass
-    optimizer.step() # Update weights 
+
+
+    # New! Clipping gradients to stabilize training and avoid exploding gradients
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) if config.gradient_clipping else None
+    # New! Determine and set the learning rate for this step
+    lr = get_lr(step, config)
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
+    optimizer.step() # Update weights
     torch.cuda.synchronize() if compute_device == "cuda" else None  # Synchronize for accurate timing
     t1 = time.time()
     duration = t1 - t0
 
-    print(f"Step {step+1:03d} | Loss: {loss.item():.4f} | Time: {duration:.2f}s | Tokens/sec: {train_loader.batch_size * train_loader.seq_size / duration:.2f}")
+    tokens_processed = train_loader.batch_size * train_loader.seq_size # Total tokens processed in this step
+    tokens_per_second = tokens_processed / duration
+    durations.append(duration)
+    tokens_per_sec.append((tokens_per_second))
 
 
 # Estimate loss after the last training step
@@ -389,8 +443,10 @@ losses = estimate_loss()
 starting_limits_ffn, starting_limits_pwe = update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model, starting_limits_ffn, starting_limits_pwe)
 
 
-end_train = datetime.now() # Record start time of training
-total_time = end_train - start_train
+end_train_loop = datetime.now() # Record start time of training
+total_time = end_train_loop - start_train_loop
+print(f"\nTraining completed in {total_time} (HH:MM:SS)")
+
 final_losses = losses # Store final losses for reporting
 
 training_summary = (

@@ -340,7 +340,6 @@ class GPT2Model(nn.Module):
         - Fused version if available for better performance on CUDA
         - Set betas, epsilon and learning rate according to the config
         """
-
         param_dict = {pn: p for pn, p in self.named_parameters()} # Make dictionary of parameter names and tensors
         param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad} # Filter out parameters that do not require gradients
         
@@ -364,7 +363,6 @@ class GPT2Model(nn.Module):
         optimizer = torch.optim.AdamW(params_to_optimize, lr=config.learning_rate, betas=(config.beta1, config.beta2), eps=config.eps, fused=use_fused)
 
         return optimizer
-
     
     def generate(self, idx: torch.Tensor, max_new_tokens: int) -> torch.Tensor:
         """
