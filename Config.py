@@ -62,6 +62,7 @@ class GPT2Config(ModelConfig):
 
     # Model Architecture Parameters
     seq_size: int = 1024 # Number of tokens in the input sequence. Maximum context length for the predictions
+    batch_size : int = 16 # Number of sequences in a batch to be processed in parallel
     n_head: int = 12 # Number of attention heads
     n_layer: int = 12 # Number of transformer blocks
     n_embd: int = 768 # Embedding dimension (size of the hidden states)

@@ -143,7 +143,7 @@ class DataLoaderLite:
         return xb, yb  
 
 # Create dataloader instance
-train_loader = DataLoaderLite(B=16, T=1024)
+train_loader = DataLoaderLite(B=config.batch_size, T=config.seq_size)
 
 # =============================================================================
 # MODEL INITIALIZATION
@@ -156,18 +156,24 @@ print("MODEL INITIALIZATION")
 #model = GPT2Model.from_pretrained('gpt2') # Load the pre-trained GPT-2 model from Huggingface
 model = GPT2Model(config)
 model.to(device) # this only works for the model, for tensors do tensor = tensor.to(device)
-model = torch.compile(model) if TORCH_COMPILATION else model # New! https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html Speed ups the model with PyTorch 2.0's compile feature (optional, but recommended for performance). Speedup mainly comes from reducing Python overhead and GPU read/writes, and so the observed speedup may vary on factors such as model architecture and batch size
+
+# New! https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html 
+# Speed ups the model with PyTorch 2.0's compile feature (optional, but recommended for performance). 
+# Speedup mainly comes from reducing Python overhead and GPU read/writes, and so the observed speedup 
+# may vary on factors such as model architecture and batch size
+model = torch.compile(model) if TORCH_COMPILATION else model 
 
 # Count model parameters
 total_params = sum(p.numel() for p in model.parameters())
 trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+model_size = total_params * 4 / 1024**2  # Size in MB (assuming float32, 4 bytes per parameter)
 
 model_summary = (
     f"\nModel Details:\n"
     f"  Architecture: GPT-style Transformer\n"
     f"  Total parameters: {total_params:,}\n"
     f"  Trainable parameters: {trainable_params:,}\n"
-    f"  Model size: ~{total_params * 4 / 1024**2:.2f} MB (float32)\n" # asu
+    f"  Model size: ~{model_size:.2f} MB (float32)\n"
     f"\n\nOptimizer: AdamW with learning rate {config.learning_rate}\n"
 )
 
@@ -217,38 +223,115 @@ def get_lr(step: int, config: GPT2Config) -> float:
 start_train = datetime.now() # Record start time of training
 # Initialize optimizer
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, betas=(config.beta1, config.beta2), eps=config.eps) # New! Use AdamW optimizer with beta1, beta2 and epsilon parameters for better convergence
+
+# Initialize lists to store metrics for plotting
+losses = []
+lrs = []
+norms = []
+durations = []
+tokens_per_sec = []
+
 for step in range(config.training_steps):
+    
     t0 = time.time()
+    
     # TRAINING PHASE
 
     # Sample a batch random of training data
     xb, yb = train_loader.next_batch()
     
+    # New! Use autocast for mixed precision training: https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html
     if AUTOCAST:
-        with torch.autocast(device_type=compute_device, dtype=torch.bfloat16 if compute_device == "cuda" else torch.float32): # New! Use autocast for mixed precision training: https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html
-            logits, loss = model(xb, yb) # Forward pass optimized for speed
+        with torch.autocast(device_type=compute_device, dtype=torch.bfloat16 if compute_device == "cuda" else torch.float32): 
+            logits, loss = model(xb, yb) # Forward pass
     else:
-        logits, loss = model(xb, yb) # Forward pass without autocast
+        logits, loss = model(xb, yb) # Forward pass
     
     optimizer.zero_grad() # Reset gradients
     loss.backward() # Backward pass
-    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) # New! Clipping gradients to stabilize training and avoid exploding gradients
+    
+    # New! Clipping gradients to stabilize training and avoid exploding gradients
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) 
     
     # New! Determine and set the learning rate for this step
     lr = get_lr(step, config)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
         
-        
-    optimizer.step() # Update weights 
+    optimizer.step() # Update weights
+
     torch.cuda.synchronize() if compute_device == "cuda" else None  # Synchronize for accurate timing
     t1 = time.time()
     duration = t1 - t0
+
+    # Store metrics for plotting
+    losses.append(loss.item())
+    lrs.append(lr)
+    norms.append(norm.cpu().item() if norm.is_cuda else norm.item())
+    durations.append(duration)
+    tokens_per_sec.append((train_loader.batch_size * train_loader.seq_size / duration))
 
     print(f"Step {step+1:03d} | Loss: {loss.item():.4} | lr: {lr:.4e} | norm: {norm:.4e} | dt: {duration:.4}s | Tokens/sec: {train_loader.batch_size * train_loader.seq_size / duration}")
 
 end_train = datetime.now() # Record start time of training
 print(f"\nTraining completed in {end_train - start_train} (HH:MM:SS)")
+
+# Save plots to files
+plt.figure(figsize=(20, 12))
+
+# Loss plot
+plt.subplot(2, 2, 1)
+plt.plot(losses, label='Loss')
+plt.xlabel('Step')
+plt.ylabel('Loss')
+plt.title('Loss over Steps')
+plt.legend()
+plt.grid(True)
+plt.text(len(losses) - 1, losses[-1], f'{losses[-1]:.4f}', fontsize=9, color='blue')
+
+# Learning rate plot
+plt.subplot(2, 2, 2)
+plt.plot(lrs, label='Learning Rate', color='orange')
+plt.xlabel('Step')
+plt.ylabel('Learning Rate')
+plt.title('Learning Rate over Steps')
+plt.legend()
+plt.grid(True)
+plt.text(len(lrs) - 1, lrs[-1], f'{lrs[-1]:.4e}', fontsize=9, color='blue')
+
+# # Gradient norm plot
+# plt.subplot(2, 3, 3)
+# plt.plot(norms, label='Gradient Norm', color='green')
+# plt.xlabel('Step')
+# plt.ylabel('Norm')
+# plt.title('Gradient Norm over Steps')
+# plt.legend()
+# plt.grid(True)
+# plt.text(len(norms) - 1, norms[-1], f'{norms[-1]:.4f}', fontsize=9, color='blue')
+
+# Duration plot
+plt.subplot(2, 2, 3)
+plt.plot(durations, label='Duration', color='red')
+plt.xlabel('Step')
+plt.ylabel('Duration (s)')
+plt.title('Duration per Step')
+plt.legend()
+plt.grid(True)
+plt.text(len(durations) - 1, durations[-1], f'{durations[-1]:.4f}', fontsize=9, color='blue')
+
+# Tokens per second plot
+plt.subplot(2, 2, 4)
+plt.plot(tokens_per_sec, label='Tokens/sec', color='purple')
+plt.xlabel('Step')
+plt.ylabel('Tokens/sec')
+plt.title('Tokens/sec over Steps')
+plt.legend()
+plt.grid(True)
+plt.text(len(tokens_per_sec) - 1, tokens_per_sec[-1], f'{tokens_per_sec[-1]:.4f}', fontsize=9, color='blue')
+
+plt.tight_layout()
+plt.savefig('training_metrics_summary.png')
+
 # # =============================================================================
 # # INFERENCE & TEXT GENERATION
 # # =============================================================================
@@ -268,7 +351,7 @@ print(f"\nTraining completed in {end_train - start_train} (HH:MM:SS)")
 # while idx.size(1) < max_new_tokens:
 
 #     with torch.no_grad():
-#         # right now idx is (B,T) where B = 5, T = 8
+#         # right now idx is (B, T) where B = 5, T = 8
 
 #         # forward the model
 #         logits, _ = model(idx)  # (B, T, vocab_size)
