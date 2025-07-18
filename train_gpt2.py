@@ -22,7 +22,8 @@ from torch.nn import functional as F
 from Config import GPTConfig, GPT2Config, ModelConfig
 from model_gpt2 import GPT2Model
 
-from torch.distributed import init_process_group, destroy_process_group # Run script with: torchrun --standalone --nproc_per_node=1 train_gpt2.py
+from torch.distributed import init_process_group, destroy_process_group  # Run script with: torchrun --standalone --nproc_per_node=1 train_gpt2.py
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 # =============================================================================
 # CONFIGURATION & SETUP
@@ -105,9 +106,11 @@ cprint("DATA PREPARATION", compute_color)
 tokenizer = char_level_tokenizer if config.selected_tokenizer == char_level_tokenizer.name else tiktoken_tokenizer
 config.vocab_size = tokenizer.n_vocab  if config.vocab_size is None else config.vocab_size # Set vocabulary size based on the tokenizer if it is not provided in the config
 class DataLoaderLite:
-    def __init__(self, B, T):
+    def __init__(self, B, T, process_rank=0, num_processes=1):
         self.batch_size = B
         self.seq_size = T
+        self.process_rank = process_rank
+        self.num_processes = num_processes
 
         # At init load tokens from disk and store them in memory
         try:
@@ -122,9 +125,8 @@ class DataLoaderLite:
         cprint(f"1 epoch = {len(self.tokens)// (self.batch_size*self.seq_size)} batches", compute_color)
         
         self.vocab_size = tokenizer.n_vocab
+        self.current_position = self.process_rank * self.batch_size * self.seq_size  # state # New! Initialize current position based on process rank to ensure each process gets a unique subset of the data
 
-        self.current_position = 0 # state
-        
         data_preparation_summary = (
             f"\nTokenziation summary:\n"
             f"  Tokenizer: {tokenizer.name}\n"
@@ -156,18 +158,29 @@ class DataLoaderLite:
         """
         B,T = self.batch_size, self.seq_size
         
-        buf = self.tokens[self.current_position: self.current_position+ B*T + 1]
+        data = self.tokens
+        
+        # Ensure current_position does not exceed data length
+        if self.current_position >= len(data):
+            self.current_position = self.process_rank * self.batch_size * self.seq_size
+
+        buf = data[self.current_position: self.current_position+ B*T + 1]
+
+        # Safeguard against empty slices
+        if len(buf) < B * T + 1:
+            raise ValueError(f"Insufficient data to generate batch: requested {B * T + 1}, but got {len(buf)}")
+
         xb = buf[:-1].view(B,T) # inputs
         yb = buf[1:].view(B,T)  # targets (shifted) 
-        self.current_position += B*T # advance the current position by B*T tokens
+        self.current_position += B * T * self.num_processes # New! advance the current position by B*T*num_processes tokens to ensure each process gets a unique subset of the data
 
         # If we reach the end of the tokens, reset to the beginning
-        if self.current_position + B*T + 1 > len(self.tokens):
-            self.current_position = 0
-        
+        if self.current_position + (B * T * self.num_processes + 1) > len(data):
+            self.current_position = self.process_rank * self.batch_size * self.seq_size
+
         # Move to compute device (GPU or CPU)
         xb, yb = xb.to(device), yb.to(device)
-        
+
         return xb, yb  
 
 # New! Macro batch: We will repeat the forward - backward grad_accumulation_steps times to simulate a larger batch size. We will call this micro-step.
@@ -177,7 +190,7 @@ assert macro_batch_size % (total_batch_size*ddp_world_size) == 0, "macro_batch_s
 grad_accumulation_steps = macro_batch_size // (total_batch_size*ddp_world_size)
 
 # Create dataloader instance
-train_loader = DataLoaderLite(B=config.batch_size, T=config.seq_size)
+train_loader = DataLoaderLite(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size) # New! Adapted to DDP
 
 # =============================================================================
 # MODEL INITIALIZATION
@@ -196,6 +209,13 @@ model.to(device) # this only works for the model, for tensors do tensor = tensor
 # Speedup mainly comes from reducing Python overhead and GPU read/writes, and so the observed speedup 
 # may vary on factors such as model architecture and batch size
 model = torch.compile(model) if TORCH_COMPILATION else model 
+
+
+# New! DDP
+if ddp:
+    print(f"Initializing DDP for model on device {compute_device} with local rank {ddp_local_rank}")
+    model = DDP(model, device_ids = [ddp_local_rank]) # TODO: this is not working with 1 GPU, need to investigate
+raw_model = model.module if ddp else model  # Get the raw model for parameter counting and summary
 
 # Count model parameters
 total_params = sum(p.numel() for p in model.parameters())
@@ -261,7 +281,7 @@ cprint("TRAINING", compute_color)
 losses_accumulated, lrs, norms, durations, tokens_per_sec = [], [], [], [], []
 
 # Initialize optimizer
-optimizer = model.configure_optimizers(config, device_type=compute_device)
+optimizer = raw_model.configure_optimizers(config, device_type=compute_device)
 
 start_train_loop = datetime.now() # Record start time of training
 for step in range(config.training_steps):
@@ -287,9 +307,16 @@ for step in range(config.training_steps):
         
         loss = loss / grad_accumulation_steps # Important step to keep the loss the same even when we accumulate gradients over multiple micro-steps
         loss_accumulation += loss.detach()  # Accumulate loss over micro-steps
+        if ddp:
+            model.require_backward_grad_sync = (micro_step == grad_accumulation_steps - 1)  # Only sync gradients on the last micro-step
+        
         loss.backward() # Backward pass
 
-
+    if ddp:
+        torch.distributed.all_reduce(loss_accumulation, op=torch.distributed.ReduceOp.AVG)  # Aggregate loss across all processes in DDP
+        # Agter this loss_acumulation contains the average loss across all processes and its the same in all processes
+        # This is important for logging and metrics, as we want to log the same loss across all processes
+        
     # New! Clipping gradients to stabilize training and avoid exploding gradients
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) if config.gradient_clipping else None
     # New! Determine and set the learning rate for this step

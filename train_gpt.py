@@ -23,6 +23,7 @@ from Config import GPTConfig, GPT2Config, ModelConfig
 from model_gpt import GPTModel
 
 from torch.distributed import init_process_group, destroy_process_group # Run script with: torchrun --standalone --nproc_per_node=1 train_gpt.py
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 # =============================================================================
 # CONFIGURATION & SETUP
@@ -108,9 +109,11 @@ cprint("DATA PREPARATION", compute_color)
 tokenizer = char_level_tokenizer if config.selected_tokenizer == char_level_tokenizer.name else tiktoken_tokenizer
 config.vocab_size = tokenizer.n_vocab  if config.vocab_size is None else config.vocab_size # Set vocabulary size based on the tokenizer if it is not provided in the config
 class DataLoaderLite:
-    def __init__(self, B, T):
+    def __init__(self, B, T, process_rank=0, num_processes=1):
         self.batch_size = B
         self.seq_size = T
+        self.process_rank = process_rank
+        self.num_processes = num_processes
 
         # At init load tokens from disk and store them in memory
         try:
@@ -125,6 +128,7 @@ class DataLoaderLite:
         cprint(f"1 epoch = {len(self.tokens)// (self.batch_size*self.seq_size)} batches", compute_color)
         
         self.vocab_size = tokenizer.n_vocab
+        self.current_position = self.process_rank * self.batch_size * self.seq_size  # state # New! Initialize current position based on process rank to ensure each process gets a unique subset of the data
 
 
         # Generate splits: train , val
@@ -169,15 +173,30 @@ class DataLoaderLite:
                 - etc.
         """
         B,T = self.batch_size, self.seq_size
-        
+
         data = self.train_data if split_type == "train" else self.val_data
-        starting_idx = torch.randint(len(data) - T, (B,))         # Sample random starting indices for each sequence in the batch
-        xb = torch.stack([data[i:i+T] for i in starting_idx])          # Extract sequences and create targets
-        yb = torch.stack([data[i+1:i+T+1] for i in starting_idx])         # Shift the sequence by one to the right to create the target       
-        
+
+        # Ensure current_position does not exceed data length
+        if self.current_position >= len(data):
+            self.current_position = self.process_rank * self.batch_size * self.seq_size
+
+        buf = data[self.current_position: self.current_position+ B*T + 1]
+
+        # Safeguard against empty slices
+        if len(buf) < B * T + 1:
+            raise ValueError(f"Insufficient data to generate batch: requested {B * T + 1}, but got {len(buf)}")
+
+        xb = buf[:-1].view(B,T) # inputs
+        yb = buf[1:].view(B,T)  # targets (shifted) 
+        self.current_position += B * T * self.num_processes # New! advance the current position by B*T*num_processes tokens to ensure each process gets a unique subset of the data
+
+        # If we reach the end of the tokens, reset to the beginning
+        if self.current_position + (B * T * self.num_processes + 1) > len(data):
+            self.current_position = self.process_rank * self.batch_size * self.seq_size
+
         # Move to compute device (GPU or CPU)
         xb, yb = xb.to(device), yb.to(device)
-        
+
         return xb, yb  
 
 
@@ -200,6 +219,13 @@ model.to(device) # this only works for the model, for tensors do tensor = tensor
 # Speedup mainly comes from reducing Python overhead and GPU read/writes, and so the observed speedup 
 # may vary on factors such as model architecture and batch size
 model = torch.compile(model) if TORCH_COMPILATION else model 
+
+
+# New! DDP
+if ddp:
+    print(f"Initializing DDP for model on device {compute_device} with local rank {ddp_local_rank}")
+    model = DDP(model, device_ids = [ddp_local_rank]) # TODO: this is not working with 1 GPU, need to investigate
+raw_model = model.module if ddp else model  # Get the raw model for parameter counting and summary
 
 # Count model parameters
 total_params = sum(p.numel() for p in model.parameters())
@@ -415,7 +441,7 @@ def estimate_loss():
 # TRAINING 
 # =============================================================================
 
-print("TRAINING")
+cprint("TRAINING", compute_color)
 
 
 # Initialize lists to store metrics for plotting
@@ -423,7 +449,7 @@ train_losses, val_losses, steps_recorded, final_losses = [], [], [], {}
 losses_accumulated, lrs, norms, durations, tokens_per_sec = [], [], [], [], []
 
 # Initialize optimizer
-optimizer = model.configure_optimizers(config, device_type=compute_device)
+optimizer = raw_model.configure_optimizers(config, device_type=compute_device)
 
 start_train_loop = datetime.now() # Record start time of training
 for step in trange(config.training_steps, desc="Training steps", unit="step", disable=False):
@@ -445,8 +471,11 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
     else:
         logits, loss = model(xb, yb) # Forward pass
     loss.backward() # Backward pass
-
-
+    if ddp:
+        torch.distributed.all_reduce(loss, op=torch.distributed.ReduceOp.AVG)  # Aggregate loss across all processes in DDP
+        # After this loss contains the average loss across all processes and its the same in all processes
+        # This is important for logging and metrics, as we want to log the same loss across all processes
+        
     # New! Clipping gradients to stabilize training and avoid exploding gradients
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) if config.gradient_clipping else None
     # New! Determine and set the learning rate for this step
