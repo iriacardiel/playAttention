@@ -206,24 +206,25 @@ def get_lr(step: int, config: GPT2Config) -> float:
     min_lr = max_lr * 0.1  # Minimum learning rate (10% of max)
     warmup_steps = config.warmup_steps  # Number of warmup steps
     total_steps = config.training_steps  # Total training steps
-    # Learning rate warmup
+    # (1) warmup
     if step < warmup_steps:
         return max_lr * (step+1) / warmup_steps  # Linear warmup
-    
-    # Learning rate after training steps
-    if step > total_steps:
+    # (2) decay
+    elif step >= warmup_steps and step <= total_steps:
+        decay_ratio = (step - warmup_steps) / (total_steps - warmup_steps)
+        assert 0 <= decay_ratio <= 1
+        coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
+        return min_lr + coeff * (max_lr - min_lr)
+    # (3) after training
+    else: 
         return min_lr
     
-    # Learning rate decay
-    decay_ratio = (step - warmup_steps) / (total_steps - warmup_steps)
-    assert 0 <= decay_ratio <= 1
-    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
-    return min_lr + coeff * (max_lr - min_lr)
     
-start_train = datetime.now() # Record start time of training
+    
+start_train_loop = datetime.now() # Record start time of training
 # Initialize optimizer
-optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, betas=(config.beta1, config.beta2), eps=config.eps) # New! Use AdamW optimizer with beta1, beta2 and epsilon parameters for better convergence
-
+#optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, betas=(config.beta1, config.beta2), eps=config.eps) # New! Use AdamW optimizer with beta1, beta2 and epsilon parameters for better convergence
+optimizer = model.configure_optimizers(config, device_type=compute_device)
 # Initialize lists to store metrics for plotting
 losses = []
 lrs = []
@@ -273,8 +274,8 @@ for step in range(config.training_steps):
 
     print(f"Step {step+1:03d} | Loss: {loss.item():.4} | lr: {lr:.4e} | norm: {norm:.4e} | dt: {duration:.4}s | Tokens/sec: {train_loader.batch_size * train_loader.seq_size / duration}")
 
-end_train = datetime.now() # Record start time of training
-print(f"\nTraining completed in {end_train - start_train} (HH:MM:SS)")
+end_train_loop = datetime.now() # Record start time of training
+print(f"\nTraining completed in {end_train_loop - start_train_loop} (HH:MM:SS)")
 
 # Save plots to files
 plt.figure(figsize=(20, 12))
@@ -284,20 +285,20 @@ plt.subplot(2, 2, 1)
 plt.plot(losses, label='Loss')
 plt.xlabel('Step')
 plt.ylabel('Loss')
+plt.yticks(np.arange(min(losses)-1, max(losses) + 1, 1))  # Set y-ticks for better readability
 plt.title('Loss over Steps')
 plt.legend()
 plt.grid(True)
-plt.text(len(losses) - 1, losses[-1], f'{losses[-1]:.4f}', fontsize=9, color='blue')
 
 # Learning rate plot
 plt.subplot(2, 2, 2)
 plt.plot(lrs, label='Learning Rate', color='orange')
 plt.xlabel('Step')
 plt.ylabel('Learning Rate')
+plt.yticks(np.arange(0, max(lrs) + 5e-5, 5e-5))  # Set y-ticks for better readability
 plt.title('Learning Rate over Steps')
 plt.legend()
 plt.grid(True)
-plt.text(len(lrs) - 1, lrs[-1], f'{lrs[-1]:.4e}', fontsize=9, color='blue')
 
 # # Gradient norm plot
 # plt.subplot(2, 3, 3)
@@ -307,27 +308,26 @@ plt.text(len(lrs) - 1, lrs[-1], f'{lrs[-1]:.4e}', fontsize=9, color='blue')
 # plt.title('Gradient Norm over Steps')
 # plt.legend()
 # plt.grid(True)
-# plt.text(len(norms) - 1, norms[-1], f'{norms[-1]:.4f}', fontsize=9, color='blue')
 
 # Duration plot
 plt.subplot(2, 2, 3)
 plt.plot(durations, label='Duration', color='red')
 plt.xlabel('Step')
 plt.ylabel('Duration (s)')
+plt.yticks(np.arange(0, max(durations) + 0.1, 0.1))  # Set y-ticks for better readability
 plt.title('Duration per Step')
 plt.legend()
 plt.grid(True)
-plt.text(len(durations) - 1, durations[-1], f'{durations[-1]:.4f}', fontsize=9, color='blue')
 
 # Tokens per second plot
 plt.subplot(2, 2, 4)
 plt.plot(tokens_per_sec, label='Tokens/sec', color='purple')
 plt.xlabel('Step')
 plt.ylabel('Tokens/sec')
+plt.yticks(np.arange(0, max(tokens_per_sec) + 10000, 10000))  # Set y-ticks for better readability
 plt.title('Tokens/sec over Steps')
 plt.legend()
 plt.grid(True)
-plt.text(len(tokens_per_sec) - 1, tokens_per_sec[-1], f'{tokens_per_sec[-1]:.4f}', fontsize=9, color='blue')
 
 plt.tight_layout()
 plt.savefig('training_metrics_summary.png')

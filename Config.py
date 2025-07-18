@@ -68,9 +68,10 @@ class GPT2Config(ModelConfig):
     n_embd: int = 768 # Embedding dimension (size of the hidden states)
     
     # Training Parameters
-    training_steps : int = 50 # Number of training steps
+    training_steps : int = 100 # Number of training steps
     learning_rate : float = 6e-4 # Lower if the model is bigger, higher if the model is smaller.
     warmup_steps: int = 10 # New! Number of warmup steps for the learning rate scheduler  
     beta1: float = 0.9 # New! Beta1 for AdamW optimizer
     beta2: float = 0.95 # New! Beta2 for AdamW optimizer
     eps: float  = 1e-8 # New! Epsilon for AdamW optimizer
+    weight_decay: float = 0.1 # New! Weight decay for AdamW optimizer
