@@ -24,35 +24,53 @@ import torch.nn as nn
 from torch.nn import functional as F
 from typing import Tuple, Optional
 import math
-from Config import GPT2Config, ModelConfig
-from transformers import GPT2LMHeadModel # Huggingface model that we will use to load the weights
+from Config import GPTConfig, GPT2Config, ModelConfig
+from transformers import GPT2LMHeadModel
 
-FLASH_ATTENTION = True # New! Use Flash Attention for faster training: https://arxiv.org/abs/2205.14135
+
 
 # =============================================================================
 # MODEL ARCHITECTURE
 # =============================================================================
 
+
 class MultiHeadAttention(nn.Module):
     """
+    Multi-head self-attention module.
+    
+    Why Multiple Heads?
+    ==================
+    
+    Multiple attention heads allow the model to attend to different aspects
+    of the input simultaneously. Each head can focus on different relationships:
+    
+    - Head 1: Might focus on syntactic relationships (subject-verb)
+    - Head 2: Might focus on semantic relationships (word meanings)
+    - Head 3: Might focus on positional relationships (nearby words)
+    - Head 4: Might focus on long-range dependencies
+    
+    The outputs of all heads are concatenated and projected back to the
+    original embedding dimension, allowing the model to use all these
+    different types of attention simultaneously.
+    
+    (+) Efficient Implementation:
     Same algorithm as the original GPT, but more efficient. Number of heads works as a new batch dimension.
     Optimized for training on GPUs, where we can use the efficient matrix multiplication operations.
-
     Mathematically equivalent to implementing each Head separately and concatenating.
     """
     def __init__(self, config: ModelConfig):
         super().__init__()
+        self.config = config
         assert config.n_embd % config.n_head == 0, "Embedding dimension must be divisible by number of heads"
-        # key, query, value projections for all heads, but in a batch
+        
+        # Multiple attention heads operating in parallel: key, query, value projections for all heads, but in a batch
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd) # 3 because we have query, key, and value. This replaces the three linear layers for each Q,K,V
 
 
         # Project concatenated heads back to embedding dimension
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
         self.c_proj.CUSTOM_SCALE_INIT = 1 # New! Custom initialization scale to control standard deviation growth inside the residual stream: 1:18:00 https://www.youtube.com/watch?v=l8pRSuU81PU&t=123s
-        # regularization
-        self.n_head = config.n_head
-        self.n_embd = config.n_embd
+
         # not really a bias, more of a mask, but following the OpenAI/HF naming though
         self.register_buffer("bias", torch.tril(torch.ones(config.seq_size, config.seq_size)).view(1, 1, config.seq_size, config.seq_size))
 
@@ -63,12 +81,12 @@ class MultiHeadAttention(nn.Module):
         # nh is "number of heads", hs is "head size", and C (number of channels) is nh *hs = n_embd
         # e.g. in GPT-2, n_embd = 768, n_head = 12, so hs = 64
         qkv = self.c_attn(x) # this is a linear layer that takes the input x and projects it to 3 * n_embd
-        q, k, v = qkv.split(self.n_embd, dim = 2) # split the output into three parts: query, key, value
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # reshape k to (B, n_head, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # reshape q to (B, n_head, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # reshape v to (B, n_head, T, hs)
-        
-        if FLASH_ATTENTION:
+        q, k, v = qkv.split(self.config.n_embd, dim = 2) # split the output into three parts: query, key, value
+        k = k.view(B, T, self.config.n_head, C // self.config.n_head).transpose(1, 2) # reshape k to (B, n_head, T, hs)
+        q = q.view(B, T, self.config.n_head, C // self.config.n_head).transpose(1, 2) # reshape q to (B, n_head, T, hs)
+        v = v.view(B, T, self.config.n_head, C // self.config.n_head).transpose(1, 2) # reshape v to (B, n_head, T, hs)
+
+        if self.config.flash_attention: # New! Use Flash Attention for faster training: https://arxiv.org/abs/2205.14135
             y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
         else:
             # attention (materializes the large (T,T) matrix for all the queries and keys)
@@ -87,7 +105,7 @@ class MultiHeadAttention(nn.Module):
     
 class FeedForward(nn.Module):
     """
-    Position-wise feed-forward network.
+    Position-wise feedforward network.
     
     Purpose:
     ========
@@ -104,7 +122,7 @@ class FeedForward(nn.Module):
     output and introduces non-linearity that's crucial for learning
     complex patterns.
     
-    Architecture: Linear -> GeLU -> Linear -> Dropout
+    Architecture: Linear -> GeLU -> Linear
     """
     def __init__(self, config: ModelConfig):
         super().__init__()
@@ -206,6 +224,8 @@ class GPT2Model(nn.Module):
    
     # New! Init params    
     def _init_weights(self, module):
+        """Initialize weights of the model."""
+
         if isinstance(module, nn.Linear):
             std = 0.02
             if hasattr(module, 'CUSTOM_SCALE_INIT'):
@@ -215,17 +235,18 @@ class GPT2Model(nn.Module):
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean = 0.0, std = 0.02)
-            
-                
-                
-    def forward(self, idx: torch.Tensor, targets:torch.Tensor = None) -> torch.Tensor:
+ 
+    def forward(self, idx: torch.Tensor, targets: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Forward pass through the model.
         
         Args:
             idx: Input token indices, shape (batch_size, sequence_length)
+            targets: Target token indices for loss calculation, shape (batch_size, sequence_length)
+        
         Returns:
             logits: Predicted token probabilities, shape (batch_size, sequence_length, vocab_size)
+            loss: Cross-entropy loss if targets provided, None otherwise
         """
         
         B,T = idx.shape # B: batch size, T: sequence length
@@ -247,12 +268,13 @@ class GPT2Model(nn.Module):
         
         # Linear layer to project the embeddings to the vocabulary size
         logits = self.lm_head(x) # (B,T,vocab_size)
-    
+
         # Calculate loss if targets provided (for training). For inference, no need to calculate loss
         loss = None
         if targets is not None:
-            logits_flat = logits.view(-1, self.config.vocab_size)
-            targets_flat = targets.view(-1)
+            B, T, C = logits.shape
+            logits_flat = logits.view(B * T, C)
+            targets_flat = targets.view(B * T)
             loss = F.cross_entropy(logits_flat, targets_flat)
         
         return logits, loss
@@ -312,6 +334,12 @@ class GPT2Model(nn.Module):
     
     # New! Configure optimizers
     def configure_optimizers(self, config: ModelConfig, device_type:str) -> torch.optim.Optimizer:
+        """
+        Configure optimizers for the model:
+        - AdamW optimizer with weight decay for regularization
+        - Fused version if available for better performance on CUDA
+        - Set betas, epsilon and learning rate according to the config
+        """
 
         param_dict = {pn: p for pn, p in self.named_parameters()} # Make dictionary of parameter names and tensors
         param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad} # Filter out parameters that do not require gradients
@@ -359,5 +387,4 @@ class GPT2Model(nn.Module):
         Returns:
             Generated sequence, shape (batch_size, current_length + max_new_tokens)
         """
-        # NOT IMPLEMENTED YET
-        raise NotImplementedError("Generation method not implemented yet.")
+        raise NotImplementedError("Generation method not yet implemented for GPT-2.")

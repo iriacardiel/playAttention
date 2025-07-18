@@ -13,12 +13,15 @@ Architecture:
 - Residual connections and layer normalization
 """
 
+import inspect
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from typing import Tuple, Optional
 import math
-from Config import GPTConfig, ModelConfig
+from Config import GPTConfig, GPT2Config, ModelConfig
+from transformers import GPT2LMHeadModel
+
 
 
 # =============================================================================
@@ -112,6 +115,9 @@ class MultiHeadAttention(nn.Module):
     """
     def __init__(self, config: ModelConfig):
         super().__init__()
+        self.config = config
+        assert config.n_embd % config.n_head == 0, "Embedding dimension must be divisible by number of heads"
+        
         # Multiple attention heads operating in parallel
 
         self.heads = nn.ModuleList([
@@ -141,7 +147,7 @@ class MultiHeadAttention(nn.Module):
     
 class FeedForward(nn.Module):
     """
-    Position-wise feed-forward network.
+    Position-wise feedforward network.
     
     Purpose:
     ========
@@ -251,7 +257,14 @@ class GPTModel(nn.Module):
         self.ln_f = nn.LayerNorm(config.n_embd)                                         # Final normalization 
         
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)                   # Project to vocabulary 
+        
+        # New! Init params
+        #self.apply(self._init_weights) # 1:15:00 at Karpathy's video: https://www.youtube.com/watch?v=l8pRSuU81PU&t=2383s
  
+    # New! Init params    
+    def _init_weights(self, module):
+        """Initialize weights of the model."""
+        raise NotImplementedError("Weight initialization is not implemented yet for GPT.")
 
     def forward(self, idx: torch.Tensor, targets: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
@@ -273,6 +286,7 @@ class GPTModel(nn.Module):
         pos = torch.arange(0, T, dtype=torch.long, device=idx.device) # position indices
         pos_emb = self.wpe(pos) # position embeddings (T, n_embd)
         tok_emb = self.wte(idx) # token embeddings (B,T, n_embd)
+
         x = tok_emb + pos_emb # (B, T, n_embd)
         
         # Pass through the transformer blocks
@@ -283,7 +297,7 @@ class GPTModel(nn.Module):
         
         # Linear layer to project the embeddings to the vocabulary size
         logits = self.lm_head(x) # (B,T,vocab_size)
-        
+
         # Calculate loss if targets provided (for training). For inference, no need to calculate loss
         loss = None
         if targets is not None:
@@ -299,8 +313,17 @@ class GPTModel(nn.Module):
         """
         Loads the GPT-2 model weights from huggingface
         """
-        # NOT IMPLEMENTED 
-        raise NotImplementedError("Loading from pretrained weights is not implemented in this example.")
+        raise NotImplementedError("Loading from pretrained weights is not yet implemented for GPT.")
+    
+    # New! Configure optimizers
+    def configure_optimizers(self, config: ModelConfig, device_type:str) -> torch.optim.Optimizer:
+        """
+        Configure optimizers for the model:
+        - AdamW optimizer with weight decay for regularization
+        - Fused version if available for better performance on CUDA
+        - Set betas, epsilon and learning rate according to the config
+        """
+        raise NotImplementedError("Optimizer configuration is not yet implemented for GPT.")
     
     def generate(self, idx: torch.Tensor, max_new_tokens: int) -> torch.Tensor:
         """
