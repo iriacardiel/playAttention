@@ -142,6 +142,13 @@ class DataLoaderLite:
         
         return xb, yb  
 
+# Macro batch: 
+macro_batch_size = 2*config.batch_size * config.seq_size #config.macro_batch_size # 2**19  approx. 0.5M like in the paper
+total_batch_size = config.batch_size * config.seq_size
+assert macro_batch_size % total_batch_size == 0, "macro_batch_size must be divisible by total_batch_size"
+grad_accumulation_steps = macro_batch_size // total_batch_size
+# We will repeat the forward - backward grad_accumulation_steps times to simulate a larger batch size. We will call this micro-step.
+
 # Create dataloader instance
 train_loader = DataLoaderLite(B=config.batch_size, T=config.seq_size)
 
@@ -226,7 +233,7 @@ start_train_loop = datetime.now() # Record start time of training
 #optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate, betas=(config.beta1, config.beta2), eps=config.eps) # New! Use AdamW optimizer with beta1, beta2 and epsilon parameters for better convergence
 optimizer = model.configure_optimizers(config, device_type=compute_device)
 # Initialize lists to store metrics for plotting
-losses = []
+losses_accumulated = []
 lrs = []
 norms = []
 durations = []
@@ -238,18 +245,24 @@ for step in range(config.training_steps):
     
     # TRAINING PHASE
 
-    # Sample a batch random of training data
-    xb, yb = train_loader.next_batch()
-    
-    # New! Use autocast for mixed precision training: https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html
-    if AUTOCAST:
-        with torch.autocast(device_type=compute_device, dtype=torch.bfloat16 if compute_device == "cuda" else torch.float32): 
-            logits, loss = model(xb, yb) # Forward pass
-    else:
-        logits, loss = model(xb, yb) # Forward pass
-    
     optimizer.zero_grad() # Reset gradients
-    loss.backward() # Backward pass
+
+    # New! Simulate larger batch size by repeating the forward - backward grad_accumulation_steps times
+    loss_accumulation = 0.0
+    for micro_step in range(grad_accumulation_steps):
+        # Sample a batch random of training data
+        xb, yb = train_loader.next_batch()
+        
+        # New! Use autocast for mixed precision training: https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html
+        if AUTOCAST:
+            with torch.autocast(device_type=compute_device, dtype=torch.bfloat16 if compute_device == "cuda" else torch.float32): 
+                logits, loss = model(xb, yb)
+        else:
+            logits, loss = model(xb, yb) # Forward pass
+        
+        loss = loss / grad_accumulation_steps # Important step to keep the loss the same even when we accumulate gradients over multiple micro-steps
+        loss_accumulation += loss.detach()  # Accumulate loss over micro-steps
+        loss.backward() # Backward pass
     
     # New! Clipping gradients to stabilize training and avoid exploding gradients
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) 
@@ -264,15 +277,17 @@ for step in range(config.training_steps):
     torch.cuda.synchronize() if compute_device == "cuda" else None  # Synchronize for accurate timing
     t1 = time.time()
     duration = t1 - t0
+    tokens_processed = train_loader.batch_size * train_loader.seq_size * grad_accumulation_steps  # Total tokens processed in this step
+    tokens_per_second = tokens_processed / duration
 
     # Store metrics for plotting
-    losses.append(loss.item())
+    losses_accumulated.append(loss_accumulation.cpu().item() if loss_accumulation.is_cuda else loss_accumulation.item())  # Convert to Python float for plotting
     lrs.append(lr)
     norms.append(norm.cpu().item() if norm.is_cuda else norm.item())
     durations.append(duration)
-    tokens_per_sec.append((train_loader.batch_size * train_loader.seq_size / duration))
+    tokens_per_sec.append((tokens_per_second))
 
-    print(f"Step {step+1:03d} | Loss: {loss.item():.4} | lr: {lr:.4e} | norm: {norm:.4e} | dt: {duration:.4}s | Tokens/sec: {train_loader.batch_size * train_loader.seq_size / duration}")
+    print(f"Step {step+1:03d} | Loss accum: {loss_accumulation:.4} | lr: {lr:.4e} | norm: {norm:.4e} | dt: {duration:.4}s | Tokens/sec: {tokens_per_second}")
 
 end_train_loop = datetime.now() # Record start time of training
 print(f"\nTraining completed in {end_train_loop - start_train_loop} (HH:MM:SS)")
@@ -282,10 +297,10 @@ plt.figure(figsize=(20, 12))
 
 # Loss plot
 plt.subplot(2, 2, 1)
-plt.plot(losses, label='Loss')
+plt.plot(losses_accumulated, label='Loss Accumulated')
 plt.xlabel('Step')
-plt.ylabel('Loss')
-plt.yticks(np.arange(min(losses)-1, max(losses) + 1, 1))  # Set y-ticks for better readability
+plt.ylabel('Loss Accumulated')
+plt.yticks(np.arange(min(losses_accumulated)-1, max(losses_accumulated) + 1, 1))  # Set y-ticks for better readability
 plt.title('Loss over Steps')
 plt.legend()
 plt.grid(True)

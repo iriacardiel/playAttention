@@ -67,6 +67,8 @@ class GPT2Config(ModelConfig):
     n_layer: int = 12 # Number of transformer blocks
     n_embd: int = 768 # Embedding dimension (size of the hidden states)
     
+    macro_batch_size: int = 524288 # New! Macro batch size for training, e.g., 2**19  approx. 0.5M like in the paper
+    
     # Training Parameters
     training_steps : int = 100 # Number of training steps
     learning_rate : float = 6e-4 # Lower if the model is bigger, higher if the model is smaller.
