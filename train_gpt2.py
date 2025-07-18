@@ -67,8 +67,9 @@ else:
         compute_device = "mps"
     
     compute_color = compute_color_map.get(compute_device, "white")  # Default to white if not found
+    device_type = "cuda" if compute_device.startswith("cuda") else compute_device
     device = torch.device(compute_device)
-    cprint(f"Using device: {compute_device}", compute_color)
+    cprint(f"Using device: {compute_device} of type {device_type}", compute_color)
 
 # For reproducibility
 seed = 1337
@@ -210,7 +211,6 @@ model.to(device) # this only works for the model, for tensors do tensor = tensor
 # may vary on factors such as model architecture and batch size
 model = torch.compile(model) if TORCH_COMPILATION else model 
 
-
 # New! DDP
 if ddp:
     print(f"Initializing DDP for model on device {compute_device} with local rank {ddp_local_rank}")
@@ -281,7 +281,7 @@ cprint("TRAINING", compute_color)
 losses_accumulated, lrs, norms, durations, tokens_per_sec = [], [], [], [], []
 
 # Initialize optimizer
-optimizer = raw_model.configure_optimizers(config, device_type=compute_device)
+optimizer = raw_model.configure_optimizers(config, device_type=device_type)
 
 start_train_loop = datetime.now() # Record start time of training
 for step in range(config.training_steps):
@@ -290,6 +290,7 @@ for step in range(config.training_steps):
     
     # TRAINING PHASE
     t0 = time.time()
+    model.train()
     optimizer.zero_grad() # Reset gradients
 
     # New! Simulate larger batch size by repeating the forward - backward grad_accumulation_steps times
@@ -298,17 +299,19 @@ for step in range(config.training_steps):
         # Sample a batch random of training data
         xb, yb = train_loader.next_batch()
         
+        if ddp:
+            model.require_backward_grad_sync = (micro_step == grad_accumulation_steps - 1)  # Only sync gradients on the last micro-step
+            
         # New! Use autocast for mixed precision training: https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html
         if AUTOCAST:
-            with torch.autocast(device_type=compute_device, dtype=torch.bfloat16 if compute_device == "cuda" else torch.float32): 
+            with torch.autocast(device_type=device_type, dtype=torch.bfloat16 if device_type == "cuda" else torch.float32): 
                 logits, loss = model(xb, yb)
         else:
             logits, loss = model(xb, yb) # Forward pass
         
         loss = loss / grad_accumulation_steps # Important step to keep the loss the same even when we accumulate gradients over multiple micro-steps
         loss_accumulation += loss.detach()  # Accumulate loss over micro-steps
-        if ddp:
-            model.require_backward_grad_sync = (micro_step == grad_accumulation_steps - 1)  # Only sync gradients on the last micro-step
+        
         
         loss.backward() # Backward pass
 
@@ -325,21 +328,21 @@ for step in range(config.training_steps):
         param_group['lr'] = lr
 
     optimizer.step() # Update weights
-    torch.cuda.synchronize() if compute_device == "cuda" else None  # Synchronize for accurate timing
+    torch.cuda.synchronize() if device_type == "cuda" else None  # Synchronize for accurate timing
     t1 = time.time()
-    duration = t1 - t0
+    dt = t1 - t0
 
-    tokens_processed = train_loader.batch_size * train_loader.seq_size * grad_accumulation_steps  # Total tokens processed in this step
-    tokens_per_second = tokens_processed / duration
+    tokens_processed = train_loader.batch_size * train_loader.seq_size * grad_accumulation_steps * ddp_world_size # Total tokens processed in this step
+    tokens_per_second = tokens_processed / dt
 
     # Store metrics for plotting
     losses_accumulated.append(loss_accumulation.cpu().item() if loss_accumulation.is_cuda else loss_accumulation.item())  # Convert to Python float for plotting
     lrs.append(lr)
     norms.append(norm.cpu().item() if norm.is_cuda else norm.item())
-    durations.append(duration)
+    durations.append(dt)
     tokens_per_sec.append((tokens_per_second))
 
-    cprint(f"Step {step+1:03d} | Loss accum: {loss_accumulation:.4} | lr: {lr:.4e} | norm: {norm:.4e} | dt: {duration:.4}s | Tokens/sec: {tokens_per_second}", compute_color)
+    cprint(f"Step {step+1:03d} | Loss accum: {loss_accumulation:.4} | lr: {lr:.4e} | norm: {norm:.4e} | dt: {dt:.4}s | Tokens/sec: {tokens_per_second}", compute_color)
 
 end_train_loop = datetime.now() # Record start time of training
 total_time = end_train_loop - start_train_loop

@@ -71,8 +71,9 @@ class MultiHeadAttention(nn.Module):
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
         self.c_proj.CUSTOM_SCALE_INIT = 1 # New! Custom initialization scale to control standard deviation growth inside the residual stream: 1:18:00 https://www.youtube.com/watch?v=l8pRSuU81PU&t=123s
 
-        # not really a bias, more of a mask, but following the OpenAI/HF naming though
-        self.register_buffer("bias", torch.tril(torch.ones(config.seq_size, config.seq_size)).view(1, 1, config.seq_size, config.seq_size))
+        # not really a bias, more of a mask, but following the OpenAI/HF naming though, necessary only for the non-flash attention
+        if not self.config.flash_attention:
+            self.register_buffer("bias", torch.tril(torch.ones(config.seq_size, config.seq_size)).view(1, 1, config.seq_size, config.seq_size))
 
     def forward(self, x):
 

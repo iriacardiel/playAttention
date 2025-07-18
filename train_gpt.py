@@ -27,27 +27,47 @@ from model_gpt import GPTModel
 # CONFIGURATION & SETUP
 # =============================================================================
 
+
+# Add mappings for cuda:0, cuda:1, etc., with different colors for each rank
+compute_color_map = {}
+COLORS = ["cyan", "red", "orange", "green", "blue", "indigo", "violet"]
+for i in range(len(COLORS)):
+    compute_color_map[f"cuda:{i}"] = COLORS[i % len(COLORS)]
+compute_color_map["cpu"] = "light_grey"
+compute_color_map["mps"] = "dark_grey"
+ddp = False
+if ddp:
+    # not implemented
+    raise NotImplementedError("Distributed Data Parallel (DDP) mode is not implemented yet.")
+else:
+    # NON DDP mode
+    cprint(f"Running in single process mode (not DDP)", color="yellow", attrs=["bold"])
+    ddp_rank = 0
+    ddp_local_rank = 0
+    ddp_world_size = 1
+    
+    # Determine computation device (GPU or CPU)
+    compute_device = "cpu"
+    if torch.cuda.is_available():
+        compute_device = f'cuda:{ddp_local_rank}'
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        compute_device = "mps"
+    
+    compute_color = compute_color_map.get(compute_device, "white")  # Default to white if not found
+    device_type = "cuda" if compute_device.startswith("cuda") else compute_device
+    device = torch.device(compute_device)
+    cprint(f"Using device: {compute_device} of type {device_type}", compute_color)
+
 # For reproducibility
 seed = 1337
 torch.manual_seed(seed)
-
-# Determine computation device (GPU or CPU)
-compute_device = "cpu"
 if torch.cuda.is_available():
-    compute_device = "cuda"
     torch.cuda.manual_seed(seed) 
-elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-    compute_device = "mps"
-    
-print("Using device:", compute_device)
-compute_color = "green" if compute_device == "cuda" else "blue" if compute_device == "mps" else "red"
-device = torch.device(compute_device)
 
-# GPU Settings
+# GPU Optmization Settings
 TENSOR_CORES = True  # Set to True to enable Tensor Cores for faster matrix multiplications on supported GPUs
 TORCH_COMPILATION = True  # Set to True to enable PyTorch 2.0's compile feature for performance optimization
 AUTOCAST = True  # Set to True to enable mixed precision training with autocast for performance optimization
-PRETRAINED = False  # Set to False if you want to use randomly initialized weights
 
 # New! Set high precision for matmul operations TF32: This will be faster on GPUs with Tensor Cores
 torch.set_float32_matmul_precision('high') if TENSOR_CORES else None
@@ -391,7 +411,7 @@ train_losses, val_losses, steps_recorded, final_losses = [], [], [], {}
 losses_accumulated, lrs, norms, durations, tokens_per_sec = [], [], [], [], []
 
 # Initialize optimizer
-optimizer = model.configure_optimizers(config, device_type=compute_device)
+optimizer = model.configure_optimizers(config, device_type=device_type)
 
 start_train_loop = datetime.now() # Record start time of training
 for step in trange(config.training_steps, desc="Training steps", unit="step", disable=False):
@@ -402,13 +422,13 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
     
     # TRAINING PHASE
     t0 = time.time()
+    model.train()
     optimizer.zero_grad() # Reset gradients
-
     # Sample a batch random of training data
     xb, yb = train_loader.next_batch(split_type='train')
 
     if AUTOCAST:
-            with torch.autocast(device_type=compute_device, dtype=torch.bfloat16 if compute_device == "cuda" else torch.float32): 
+            with torch.autocast(device_type=device_type, dtype=torch.bfloat16 if device_type == "cuda" else torch.float32): 
                 logits, loss = model(xb, yb)
     else:
         logits, loss = model(xb, yb) # Forward pass
@@ -422,13 +442,13 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
         param_group['lr'] = lr
 
     optimizer.step() # Update weights
-    torch.cuda.synchronize() if compute_device == "cuda" else None  # Synchronize for accurate timing
+    torch.cuda.synchronize() if device_type == "cuda" else None  # Synchronize for accurate timing
     t1 = time.time()
-    duration = t1 - t0
+    dt = t1 - t0
 
-    tokens_processed = train_loader.batch_size * train_loader.seq_size # Total tokens processed in this step
-    tokens_per_second = tokens_processed / duration
-    durations.append(duration)
+    tokens_processed = train_loader.batch_size * train_loader.seq_size# Total tokens processed in this step
+    tokens_per_second = tokens_processed / dt
+    durations.append(dt)
     tokens_per_sec.append((tokens_per_second))
 
 
