@@ -22,64 +22,32 @@ from torch.nn import functional as F
 from Config import GPTConfig, GPT2Config, ModelConfig
 from model_gpt import GPTModel
 
-from torch.distributed import init_process_group, destroy_process_group # Run script with: torchrun --standalone --nproc_per_node=1 train_gpt.py
-from torch.nn.parallel import DistributedDataParallel as DDP
 
 # =============================================================================
 # CONFIGURATION & SETUP
 # =============================================================================
-# DDP (Distributed Data Parallel): torchrun command sets the env variables RANK, LOCAL_RANK, WORLD_SIZE
-
-# Add mappings for cuda:0, cuda:1, etc., with different colors for each rank
-compute_color_map = {}
-COLORS = ["cyan", "red", "orange", "green", "blue", "indigo", "violet"]
-for i in range(len(COLORS)):
-    compute_color_map[f"cuda:{i}"] = COLORS[i % len(COLORS)]
-compute_color_map["cpu"] = "light_grey"
-compute_color_map["mps"] = "dark_grey"
-
-ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run ?
-if ddp:
-    cprint("Running in DDP mode", color="yellow",attrs=["bold"])
-    # use DDP atm demands CUDA, we set the device apporpriately according to rank
-    assert torch.cuda.is_available(), "DDP requires CUDA to be available"
-    init_process_group(backend='nccl')  # Initialize the process group for DDP
-    ddp_rank = int(os.environ['RANK'])  # Get the rank of the current process
-    ddp_local_rank = int(os.environ['LOCAL_RANK'])  # Get the local
-    ddp_world_size = int(os.environ['WORLD_SIZE'])  # Get the total number of processes
-    compute_device = f'cuda:{ddp_local_rank}'
-    compute_color = compute_color_map.get(compute_device, "white")  # Default to white if not found
-    device = torch.device(compute_device)  # Set the device for this process
-    torch.cuda.set_device(device)  # Set the current device to the local rank's GPU
-    cprint(f"DDP initialized: rank {ddp_rank}, local rank {ddp_local_rank}, world size {ddp_world_size}, device {device}", compute_color)
-else:
-    # NON DDP mode
-    cprint(f"Running in single process mode (not DDP)", color="yellow", attrs=["bold"])
-    ddp_rank = 0
-    ddp_local_rank = 0
-    ddp_world_size = 1
-    
-    # Determine computation device (GPU or CPU)
-    compute_device = "cpu"
-    if torch.cuda.is_available():
-        compute_device = f'cuda:{ddp_local_rank}'
-    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-        compute_device = "mps"
-    
-    compute_color = compute_color_map.get(compute_device, "white")  # Default to white if not found
-    device = torch.device(compute_device)
-    cprint(f"Using device: {compute_device}", compute_color)
 
 # For reproducibility
 seed = 1337
 torch.manual_seed(seed)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(seed) 
 
-# GPU Optmization Settings
+# Determine computation device (GPU or CPU)
+compute_device = "cpu"
+if torch.cuda.is_available():
+    compute_device = "cuda"
+    torch.cuda.manual_seed(seed) 
+elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+    compute_device = "mps"
+    
+print("Using device:", compute_device)
+compute_color = "green" if compute_device == "cuda" else "blue" if compute_device == "mps" else "red"
+device = torch.device(compute_device)
+
+# GPU Settings
 TENSOR_CORES = True  # Set to True to enable Tensor Cores for faster matrix multiplications on supported GPUs
 TORCH_COMPILATION = True  # Set to True to enable PyTorch 2.0's compile feature for performance optimization
 AUTOCAST = True  # Set to True to enable mixed precision training with autocast for performance optimization
+PRETRAINED = False  # Set to False if you want to use randomly initialized weights
 
 # New! Set high precision for matmul operations TF32: This will be faster on GPUs with Tensor Cores
 torch.set_float32_matmul_precision('high') if TENSOR_CORES else None
@@ -109,11 +77,9 @@ cprint("DATA PREPARATION", compute_color)
 tokenizer = char_level_tokenizer if config.selected_tokenizer == char_level_tokenizer.name else tiktoken_tokenizer
 config.vocab_size = tokenizer.n_vocab  if config.vocab_size is None else config.vocab_size # Set vocabulary size based on the tokenizer if it is not provided in the config
 class DataLoaderLite:
-    def __init__(self, B, T, process_rank=0, num_processes=1):
+    def __init__(self, B, T):
         self.batch_size = B
         self.seq_size = T
-        self.process_rank = process_rank
-        self.num_processes = num_processes
 
         # At init load tokens from disk and store them in memory
         try:
@@ -128,7 +94,6 @@ class DataLoaderLite:
         cprint(f"1 epoch = {len(self.tokens)// (self.batch_size*self.seq_size)} batches", compute_color)
         
         self.vocab_size = tokenizer.n_vocab
-        self.current_position = self.process_rank * self.batch_size * self.seq_size  # state # New! Initialize current position based on process rank to ensure each process gets a unique subset of the data
 
 
         # Generate splits: train , val
@@ -173,31 +138,16 @@ class DataLoaderLite:
                 - etc.
         """
         B,T = self.batch_size, self.seq_size
-
+        
         data = self.train_data if split_type == "train" else self.val_data
-
-        # Ensure current_position does not exceed data length
-        if self.current_position >= len(data):
-            self.current_position = self.process_rank * self.batch_size * self.seq_size
-
-        buf = data[self.current_position: self.current_position+ B*T + 1]
-
-        # Safeguard against empty slices
-        if len(buf) < B * T + 1:
-            raise ValueError(f"Insufficient data to generate batch: requested {B * T + 1}, but got {len(buf)}")
-
-        xb = buf[:-1].view(B,T) # inputs
-        yb = buf[1:].view(B,T)  # targets (shifted) 
-        self.current_position += B * T * self.num_processes # New! advance the current position by B*T*num_processes tokens to ensure each process gets a unique subset of the data
-
-        # If we reach the end of the tokens, reset to the beginning
-        if self.current_position + (B * T * self.num_processes + 1) > len(data):
-            self.current_position = self.process_rank * self.batch_size * self.seq_size
-
+        starting_idx = torch.randint(len(data) - T, (B,))         # Sample random starting indices for each sequence in the batch
+        xb = torch.stack([data[i:i+T] for i in starting_idx])          # Extract sequences and create targets
+        yb = torch.stack([data[i+1:i+T+1] for i in starting_idx])         # Shift the sequence by one to the right to create the target       
+        
         # Move to compute device (GPU or CPU)
         xb, yb = xb.to(device), yb.to(device)
-
-        return xb, yb  
+        
+        return xb, yb 
 
 
 # Create dataloader instance
@@ -219,14 +169,6 @@ model.to(device) # this only works for the model, for tensors do tensor = tensor
 # Speedup mainly comes from reducing Python overhead and GPU read/writes, and so the observed speedup 
 # may vary on factors such as model architecture and batch size
 model = torch.compile(model) if TORCH_COMPILATION else model 
-
-
-# New! DDP
-if ddp:
-    print(f"Initializing DDP for model on device {compute_device} with local rank {ddp_local_rank}")
-    model = DDP(model, device_ids = [ddp_local_rank]) # TODO: this is not working with 1 GPU, need to investigate
-raw_model = model.module if ddp else model  # Get the raw model for parameter counting and summary
-
 # Count model parameters
 total_params = sum(p.numel() for p in model.parameters())
 trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -449,7 +391,7 @@ train_losses, val_losses, steps_recorded, final_losses = [], [], [], {}
 losses_accumulated, lrs, norms, durations, tokens_per_sec = [], [], [], [], []
 
 # Initialize optimizer
-optimizer = raw_model.configure_optimizers(config, device_type=compute_device)
+optimizer = model.configure_optimizers(config, device_type=compute_device)
 
 start_train_loop = datetime.now() # Record start time of training
 for step in trange(config.training_steps, desc="Training steps", unit="step", disable=False):
@@ -471,10 +413,6 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
     else:
         logits, loss = model(xb, yb) # Forward pass
     loss.backward() # Backward pass
-    if ddp:
-        torch.distributed.all_reduce(loss, op=torch.distributed.ReduceOp.AVG)  # Aggregate loss across all processes in DDP
-        # After this loss contains the average loss across all processes and its the same in all processes
-        # This is important for logging and metrics, as we want to log the same loss across all processes
         
     # New! Clipping gradients to stabilize training and avoid exploding gradients
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) if config.gradient_clipping else None
