@@ -353,13 +353,13 @@ class GPT2Model(nn.Module):
         ]
         num_decay_params = sum(p.numel() for p in decay_params)
         num_nodecay_params = sum(p.numel() for p in nodecay_params)
-        print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
-        print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+        #print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
+        #print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
        
         # Create AdamW optimizer and use the fused version if it is available
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         use_fused = fused_available and device_type == "cuda"
-        print(f"using fused AdamW: {use_fused}")
+        #print(f"using fused AdamW: {use_fused}")
         optimizer = torch.optim.AdamW(params_to_optimize, lr=config.lr, betas=(config.beta1, config.beta2), eps=config.eps, fused=use_fused)
 
         return optimizer

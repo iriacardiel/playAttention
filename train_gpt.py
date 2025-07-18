@@ -12,7 +12,7 @@ from datetime import datetime
 import time
 import numpy as np
 from tqdm import trange
-from termcolor import colored
+from termcolor import colored,cprint
 import matplotlib.pyplot as plt
 from custom_tokenizers import tiktoken_tokenizer, char_level_tokenizer
 
@@ -22,32 +22,63 @@ from torch.nn import functional as F
 from Config import GPTConfig, GPT2Config, ModelConfig
 from model_gpt import GPTModel
 
+from torch.distributed import init_process_group, destroy_process_group # Run script with: torchrun --standalone --nproc_per_node=1 train_gpt.py
 
 # =============================================================================
 # CONFIGURATION & SETUP
 # =============================================================================
+# DDP (Distributed Data Parallel): torchrun command sets the env variables RANK, LOCAL_RANK, WORLD_SIZE
+
+# Add mappings for cuda:0, cuda:1, etc., with different colors for each rank
+compute_color_map = {}
+COLORS = ["cyan", "red", "orange", "green", "blue", "indigo", "violet"]
+for i in range(len(COLORS)):
+    compute_color_map[f"cuda:{i}"] = COLORS[i % len(COLORS)]
+compute_color_map["cpu"] = "light_grey"
+compute_color_map["mps"] = "dark_grey"
+
+ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run ?
+if ddp:
+    cprint("Running in DDP mode", color="yellow",attrs=["bold"])
+    # use DDP atm demands CUDA, we set the device apporpriately according to rank
+    assert torch.cuda.is_available(), "DDP requires CUDA to be available"
+    init_process_group(backend='nccl')  # Initialize the process group for DDP
+    ddp_rank = int(os.environ['RANK'])  # Get the rank of the current process
+    ddp_local_rank = int(os.environ['LOCAL_RANK'])  # Get the local
+    ddp_world_size = int(os.environ['WORLD_SIZE'])  # Get the total number of processes
+    compute_device = f'cuda:{ddp_local_rank}'
+    compute_color = compute_color_map.get(compute_device, "white")  # Default to white if not found
+    device = torch.device(compute_device)  # Set the device for this process
+    torch.cuda.set_device(device)  # Set the current device to the local rank's GPU
+    cprint(f"DDP initialized: rank {ddp_rank}, local rank {ddp_local_rank}, world size {ddp_world_size}, device {device}", compute_color)
+else:
+    # NON DDP mode
+    cprint(f"Running in single process mode (not DDP)", color="yellow", attrs=["bold"])
+    ddp_rank = 0
+    ddp_local_rank = 0
+    ddp_world_size = 1
+    
+    # Determine computation device (GPU or CPU)
+    compute_device = "cpu"
+    if torch.cuda.is_available():
+        compute_device = f'cuda:{ddp_local_rank}'
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        compute_device = "mps"
+    
+    compute_color = compute_color_map.get(compute_device, "white")  # Default to white if not found
+    device = torch.device(compute_device)
+    cprint(f"Using device: {compute_device}", compute_color)
 
 # For reproducibility
 seed = 1337
 torch.manual_seed(seed)
-
-# Determine computation device (GPU or CPU)
-compute_device = "cpu"
 if torch.cuda.is_available():
-    compute_device = "cuda"
     torch.cuda.manual_seed(seed) 
-elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-    compute_device = "mps"
-    
-print("Using device:", compute_device)
 
-device = torch.device(compute_device)
-
-# GPU Settings
+# GPU Optmization Settings
 TENSOR_CORES = True  # Set to True to enable Tensor Cores for faster matrix multiplications on supported GPUs
 TORCH_COMPILATION = True  # Set to True to enable PyTorch 2.0's compile feature for performance optimization
 AUTOCAST = True  # Set to True to enable mixed precision training with autocast for performance optimization
-PRETRAINED = False  # Set to False if you want to use randomly initialized weights
 
 # New! Set high precision for matmul operations TF32: This will be faster on GPUs with Tensor Cores
 torch.set_float32_matmul_precision('high') if TENSOR_CORES else None
@@ -64,16 +95,15 @@ os.makedirs(REPORT_DIR, exist_ok=True)
 
 config = GPTConfig(compute_device=compute_device)
 
-print("HYPERPARAMETERS")
+cprint("HYPERPARAMETERS", compute_color)
 
-print(config.model_dump_json(indent=2))  # Print the configuration in JSON format
-
+cprint(config.model_dump_json(indent=2), compute_color)
 
 # =============================================================================
 # DATA PREPARATION
 # =============================================================================
 
-print("DATA PREPARATION")
+cprint("DATA PREPARATION", compute_color)
 
 tokenizer = char_level_tokenizer if config.selected_tokenizer == char_level_tokenizer.name else tiktoken_tokenizer
 config.vocab_size = tokenizer.n_vocab  if config.vocab_size is None else config.vocab_size # Set vocabulary size based on the tokenizer if it is not provided in the config
@@ -91,8 +121,8 @@ class DataLoaderLite:
         
         tokens = tokenizer.encode(text)  # Encode the text into tokens
         self.tokens = torch.tensor(tokens, dtype=torch.long)
-        print(f"loaded {len(self.tokens)} tokens")
-        print(f"1 epoch = {len(self.tokens)// (self.batch_size*self.seq_size)} batches")
+        cprint(f"loaded {len(self.tokens)} tokens", compute_color)
+        cprint(f"1 epoch = {len(self.tokens)// (self.batch_size*self.seq_size)} batches", compute_color)
         
         self.vocab_size = tokenizer.n_vocab
 
@@ -116,7 +146,7 @@ class DataLoaderLite:
             f"  Validation: {len(val_data):,} tokens ({len(val_data)/len(self.tokens)*100:.1f}%)\n"
         )
         
-        print(data_preparation_summary)
+        cprint(data_preparation_summary, compute_color)
     
     # Batch generator
     def next_batch(self, split_type: str) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -158,7 +188,7 @@ train_loader = DataLoaderLite(B=config.batch_size, T=config.seq_size)
 # MODEL INITIALIZATION
 # =============================================================================
 
-print("MODEL INITIALIZATION")
+cprint("MODEL INITIALIZATION", compute_color)
 
 
 # Create model instance
@@ -184,17 +214,16 @@ model_summary = (
     f"  Model size: ~{model_size:.2f} MB (float32)\n"
 )
 
-print(model_summary)
+cprint(model_summary, compute_color)
 
 
 # Print model architecture
 # -----------------------
 # Option 1
-#print(colored(model, "green"))
+#cprint(model, compute_color)
 # Option 2
-for k, v in model.state_dict().items():
-    print(colored(f"{k}: {v.shape} - {v.dtype}", "green"))  # Print each parameter's shape and dtype
-
+# for k, v in model.state_dict().items():
+#     cprint(f"{k}: {v.shape} - {v.dtype}", compute_color)  # Print each parameter's shape and dtype
 
 
 # =============================================================================
@@ -445,7 +474,7 @@ starting_limits_ffn, starting_limits_pwe = update_visualizations(step, train_los
 
 end_train_loop = datetime.now() # Record start time of training
 total_time = end_train_loop - start_train_loop
-print(f"\nTraining completed in {total_time} (HH:MM:SS)")
+cprint(f"\nTraining completed in {total_time} (HH:MM:SS)", compute_color)
 
 final_losses = losses # Store final losses for reporting
 
