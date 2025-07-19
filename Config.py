@@ -63,12 +63,12 @@ class GPT2Config(ModelConfig):
     n_embd: int = 768 # Embedding dimension (size of the hidden states)
     dropout : float = 0  # Dropout rate for regularization (to avoid overfitting) TODO: NOT IMPLENTED YET
 
-    macro_batch_size: int = 524288 # New! Macro batch size for training. Set to none to disable macro batching. If set, it will be used to accumulate gradients over multiple batches before updating the model weights.
+    macro_batch_size: int = 524288 # Tokens per step 2**19 Macro batch size for training. Set to none to disable macro batching. If set, it will be used to accumulate gradients over multiple batches before updating the model weights.
     
     # Training Parameters
-    training_steps : int = 100 # Number of training steps
-    lr : float = 6e-4 # Lower if the model is bigger, higher if the model is smaller.
-    lr_warmup_steps: int = 10 # New! Number of warmup steps for the learning rate scheduler  
+    training_steps : int = 19073 # Number of training steps: 10e9 / 2**19 # TODO Why?
+    lr : float = 6e-4 # Lower if the model is bigger, higher if the model is smaller. 
+    lr_warmup_steps: int = 715 # Number of warmup steps for the learning rate scheduler: 715 = 375e6 (tokens with warmup in GPT3) / 2**19
     lr_decay: bool = True # New! Whether to decay the learning rate during training
     gradient_clipping: bool = True # New! Whether to clip gradients to stabilize training and avoid exploding gradients
     beta1: float = 0.9 # New! Beta1 for AdamW optimizer: default is 0.9
@@ -78,3 +78,26 @@ class GPT2Config(ModelConfig):
     
     # Evaluation Parameters
     # TODO
+
+
+'''
+Calculations for parameters in GPT2Config:
+
+(I) vocab_size
+vocab_size for gpt-2 tokenizer is 50257, (ugly number: 50000 BPE Merges + 256 Bytes tokens + 1 EOS token)
+but we use 50304 to make it a power of 2 
+
+(II) macro_batch_size
+in the paper, around 0.5 M "macro" batch size was used
+2**19 = 524288 ~ 0.5M TOKENS PER STEP (macro batch size)
+
+(III) tokens to process with the fineweb dataset
+10**9 = 10000000000 TOTAL TOKENS in the training dataset (?) check why
+
+(IV) training_steps
+that gives 19073 training steps = 10e9 tokens / 524288 tokens per step
+
+(V) lr_warmup_steps
+in GPT-3 paper they used 375e6 warmup tokens, which is 715 steps (375e6 / 524288)
+so 715 warmup steps
+'''

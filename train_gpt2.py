@@ -8,7 +8,7 @@ import math
 import os
 import csv
 import json
-from typing import Tuple, Any
+from typing import Literal, Optional, Tuple, Any
 from datetime import datetime
 import time
 import numpy as np
@@ -92,6 +92,7 @@ torch.set_float32_matmul_precision('high') if TENSOR_CORES else None
 # File paths
 TRAIN_ID = datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
 DATA_PATH = 'data/tinyshakespeare.txt'
+
 # =============================================================================
 # HYPERPARAMETERS
 # =============================================================================
@@ -110,12 +111,79 @@ cprint("DATA PREPARATION", compute_color)
 
 tokenizer = char_level_tokenizer if config.selected_tokenizer == char_level_tokenizer.name else tiktoken_tokenizer
 config.vocab_size = tokenizer.n_vocab  if config.vocab_size is None else config.vocab_size # Set vocabulary size based on the tokenizer if it is not provided in the config
-class DataLoaderLite:
-    def __init__(self, B, T, process_rank=0, num_processes=1):
-        self.batch_size = B
-        self.seq_size = T
+
+def load_tokens_from_file(filename: str) -> torch.Tensor:
+    """
+    Load tokens from a file and return them as a PyTorch tensor.
+    """
+    tokens_array = np.load(filename)
+    tokens_tensor = torch.tensor(tokens_array, dtype = torch.long)  # Convert to long tensor
+    return tokens_tensor
+
+class DataLoaderFromTokenShards:
+    def __init__(self, B:int, T:int, process_rank:int=0, num_processes:int=1, split:Literal['train', 'val']='train'):
+        self.B = B
+        self.T = T
         self.process_rank = process_rank
         self.num_processes = num_processes
+        assert split in {'train','val'} 
+
+        # get the shard filenames
+        data_root = "edu_fineweb10B"
+        shard_names = os.listdir(data_root) # Get all shard file names in the root
+        shard_names = [s for s in shard_names if split in s] # Check if 'test' or 'train' is in the shard file name
+        shard_names = sorted(shard_names) # Sort shard names
+        shard_names = [os.path.join(data_root, s) for s in shard_names] # Create absolute path names for each shard
+        self.shard_names = shard_names
+        
+        assert len(shard_names) > 0, f"No shard files found for split {split}"
+        print(f"found {len(shard_names)} for split {split}")
+
+        self.current_shard = 0 # state: start with the first shard
+        self.tokens = torch.tensor(np.load(shard_names[self.current_shard]), dtype = torch.long)  # Convert to long tensor
+        self.current_position = self.process_rank * self.B * self.T  # state: initialize current position based on process rank to ensure each process gets a unique subset of the data
+        self.vocab_size = tokenizer.n_vocab
+
+    
+    # Batch generator
+    def next_batch(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        
+        B,T = self.B, self.T
+        
+        data = self.tokens
+        
+        # Ensure current_position does not exceed data length
+        if self.current_position >= len(data):
+            self.current_position = self.process_rank * self.B * self.T
+
+        buf = data[self.current_position: self.current_position+ B*T + 1]
+
+        # Safeguard against empty slices
+        if len(buf) < B * T + 1:
+            raise ValueError(f"Insufficient data to generate batch: requested {B * T + 1}, but got {len(buf)}")
+
+        xb = buf[:-1].view(B,T) # inputs
+        yb = buf[1:].view(B,T)  # targets (shifted) 
+        self.current_position += B * T * self.num_processes # advance the current position by B*T*num_processes tokens to ensure each process gets a unique subset of the data
+
+        # If we reach the end of the tokens, move to the next shard at the first position
+        if self.current_position + (B * T * self.num_processes + 1) > len(data):
+            self.current_shard = (self.current_shard + 1) % len(self.shard_names)  # Move to the next shard
+            self.tokens = torch.tensor(np.load(self.shard_names[self.current_shard]), dtype = torch.long)  # Convert to long tensor
+            self.current_position = self.process_rank * B * T
+
+        # Move to compute device (GPU or CPU)
+        xb, yb = xb.to(device), yb.to(device)
+
+        return xb, yb
+
+class DataLoaderFromTxt:
+    def __init__(self, B:int, T:int, process_rank:int=0, num_processes:int=1, split:Optional[Literal['train', 'val']]='train'):
+        self.B = B
+        self.T = T
+        self.process_rank = process_rank
+        self.num_processes = num_processes
+        assert split in {'train','val'} # NOT IMPLEMENTED
 
         # At init load tokens from disk and store them in memory
         try:
@@ -127,10 +195,10 @@ class DataLoaderLite:
         tokens = tokenizer.encode(text)  # Encode the text into tokens
         self.tokens = torch.tensor(tokens, dtype=torch.long)
         cprint(f"loaded {len(self.tokens)} tokens", compute_color)
-        cprint(f"1 epoch = {len(self.tokens)// (self.batch_size*self.seq_size)} batches", compute_color)
+        cprint(f"1 epoch = {len(self.tokens)// (self.B*self.T)} batches", compute_color)
         
         self.vocab_size = tokenizer.n_vocab
-        self.current_position = self.process_rank * self.batch_size * self.seq_size  # state: initialize current position based on process rank to ensure each process gets a unique subset of the data
+        self.current_position = self.process_rank * self.B * self.T  # state: initialize current position based on process rank to ensure each process gets a unique subset of the data
 
         data_preparation_summary = (
             f"\nTokenziation summary:\n"
@@ -163,13 +231,13 @@ class DataLoaderLite:
                 
         This implementation supports DDP training by ensuring that each process gets a unique subset of the data based on its rank.
         """
-        B,T = self.batch_size, self.seq_size
+        B,T = self.B, self.T
         
         data = self.tokens
         
         # Ensure current_position does not exceed data length
         if self.current_position >= len(data):
-            self.current_position = self.process_rank * self.batch_size * self.seq_size
+            self.current_position = self.process_rank * B * T
 
         buf = data[self.current_position: self.current_position+ B*T + 1]
 
@@ -183,7 +251,7 @@ class DataLoaderLite:
 
         # If we reach the end of the tokens, reset to the beginning
         if self.current_position + (B * T * self.num_processes + 1) > len(data):
-            self.current_position = self.process_rank * self.batch_size * self.seq_size
+            self.current_position = self.process_rank * B * T
 
         # Move to compute device (GPU or CPU)
         xb, yb = xb.to(device), yb.to(device)
@@ -197,8 +265,9 @@ assert macro_batch_size % (total_batch_size*ddp_world_size) == 0, "macro_batch_s
 grad_accumulation_steps = macro_batch_size // (total_batch_size*ddp_world_size)
 
 # Create dataloader instance
-train_loader = DataLoaderLite(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size)
-
+#train_loader = DataLoaderFromTxt(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size)
+train_loader = DataLoaderFromTokenShards(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split='train')
+####### TODO CONTINUE HERE ######## on 3:19:00 in the video
 # =============================================================================
 # MODEL INITIALIZATION
 # =============================================================================
@@ -341,7 +410,7 @@ for step in range(config.training_steps):
     t1 = time.time()
     dt = t1 - t0
 
-    tokens_processed = train_loader.batch_size * train_loader.seq_size * grad_accumulation_steps * ddp_world_size # Total tokens processed in this step
+    tokens_processed = train_loader.B * train_loader.T * grad_accumulation_steps * ddp_world_size # Total tokens processed in this step
     tokens_per_second = tokens_processed / dt
 
     # Store metrics for plotting
