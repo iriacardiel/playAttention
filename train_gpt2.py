@@ -3,6 +3,7 @@ Training Script
 =====================================
 """
 
+from contextlib import nullcontext
 import math
 import os
 import csv
@@ -22,67 +23,70 @@ from torch.nn import functional as F
 from Config import GPTConfig, GPT2Config, ModelConfig
 from model_gpt2 import GPT2Model
 
-from torch.distributed import init_process_group, destroy_process_group  # Run script with: torchrun --standalone --nproc_per_node=1 train_gpt2.py
+import torch.distributed as dist # Run script with: torchrun --standalone --nproc_per_node=1 train_gpt2.py
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 # =============================================================================
 # CONFIGURATION & SETUP
 # =============================================================================
+
 # DDP (Distributed Data Parallel): torchrun command sets the env variables RANK, LOCAL_RANK, WORLD_SIZE
+# -------------------------------------------------------------------------------
 
-# Add mappings for cuda:0, cuda:1, etc., with different colors for each rank
-compute_color_map = {}
-COLORS = ["cyan", "red", "orange", "green", "blue", "indigo", "violet"]
-for i in range(len(COLORS)):
-    compute_color_map[f"cuda:{i}"] = COLORS[i % len(COLORS)]
-compute_color_map["cpu"] = "light_grey"
-compute_color_map["mps"] = "dark_grey"
-
-ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run ?
-if ddp:
-    cprint("Running in DDP mode", color="yellow",attrs=["bold"])
-    # use DDP atm demands CUDA, we set the device apporpriately according to rank
+DDP_ACTIVE = int(os.environ.get('RANK', -1)) != -1 # RANK equals -1 if DDP is not available
+if DDP_ACTIVE:
+    # DDP mode
+    cprint("DDP mode", color="yellow",attrs=["bold"])
     assert torch.cuda.is_available(), "DDP requires CUDA to be available"
-    init_process_group(backend='nccl')  # Initialize the process group for DDP
-    ddp_rank = int(os.environ['RANK'])  # Get the rank of the current process
-    ddp_local_rank = int(os.environ['LOCAL_RANK'])  # Get the local
-    ddp_world_size = int(os.environ['WORLD_SIZE'])  # Get the total number of processes
+    ddp_rank = int(os.environ['RANK'])
+    ddp_local_rank = int(os.environ['LOCAL_RANK'])
+    ddp_world_size = int(os.environ['WORLD_SIZE'])
     compute_device = f'cuda:{ddp_local_rank}'
-    compute_color = compute_color_map.get(compute_device, "white")  # Default to white if not found
-    device = torch.device(compute_device)  # Set the device for this process
+    device = torch.device(compute_device)
+    
+    # Initialize the process group for DDP
+    if ddp_world_size == 1:
+        dist.init_process_group(backend='gloo') 
+    else:
+        dist.init_process_group(backend='nccl')  # TODO: Test on multiple GPUs
+
     torch.cuda.set_device(device)  # Set the current device to the local rank's GPU
-    cprint(f"DDP initialized: rank {ddp_rank}, local rank {ddp_local_rank}, world size {ddp_world_size}, device {device}", compute_color)
 else:
     # NON DDP mode
-    cprint(f"Running in single process mode (not DDP)", color="yellow", attrs=["bold"])
-    ddp_rank = 0
-    ddp_local_rank = 0
-    ddp_world_size = 1
-    
-    # Determine computation device (GPU or CPU)
+    cprint(f"Single process mode (not DDP)", color="yellow", attrs=["bold"])
+    ddp_rank, ddp_local_rank, ddp_world_size = 0, 0, 1  # Default values for single process mode
+
     compute_device = "cpu"
     if torch.cuda.is_available():
         compute_device = f'cuda:{ddp_local_rank}'
     elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
         compute_device = "mps"
-    
-    compute_color = compute_color_map.get(compute_device, "white")  # Default to white if not found
-    device_type = "cuda" if compute_device.startswith("cuda") else compute_device
     device = torch.device(compute_device)
-    cprint(f"Using device: {compute_device} of type {device_type}", compute_color)
 
-# For reproducibility
+compute_color_map = {}
+color_list = ["cyan", "red", "orange", "green", "blue", "indigo", "violet"]
+for i in range(len(color_list)):
+    compute_color_map[f"cuda:{i}"] = color_list[i % len(color_list)]
+compute_color_map["cpu"] = "light_grey"
+compute_color_map["mps"] = "dark_grey"
+# Set color for the compute device
+compute_color = compute_color_map.get(compute_device, "white")  # Default to white if not found
+device_type = "cuda" if compute_device.startswith("cuda") else compute_device
+cprint(f"DDP active = {DDP_ACTIVE}. Device: {compute_device} of type {device_type}: ddp_rank = {ddp_rank}, ddp_local_rank = {ddp_local_rank}, ddp_world_size = {ddp_world_size}", compute_color)
+
+# Reproducibility settings
+# -----------------------
 seed = 1337
 torch.manual_seed(seed)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(seed) 
 
-# GPU Optmization Settings
+# GPU Optimization Settings
+# -----------------------
 TENSOR_CORES = True  # Set to True to enable Tensor Cores for faster matrix multiplications on supported GPUs
 TORCH_COMPILATION = True  # Set to True to enable PyTorch 2.0's compile feature for performance optimization
-AUTOCAST = True  # Set to True to enable mixed precision training with autocast for performance optimization
+AUTOCAST = True  # Mixed precision training https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html
 
-# New! Set high precision for matmul operations TF32: This will be faster on GPUs with Tensor Cores
 torch.set_float32_matmul_precision('high') if TENSOR_CORES else None
 
 # File paths
@@ -126,7 +130,7 @@ class DataLoaderLite:
         cprint(f"1 epoch = {len(self.tokens)// (self.batch_size*self.seq_size)} batches", compute_color)
         
         self.vocab_size = tokenizer.n_vocab
-        self.current_position = self.process_rank * self.batch_size * self.seq_size  # state # New! Initialize current position based on process rank to ensure each process gets a unique subset of the data
+        self.current_position = self.process_rank * self.batch_size * self.seq_size  # state: initialize current position based on process rank to ensure each process gets a unique subset of the data
 
         data_preparation_summary = (
             f"\nTokenziation summary:\n"
@@ -156,6 +160,8 @@ class DataLoaderLite:
                 - Predict 31 given [23, 30]
                 - Predict 7 given [23, 30, 31]
                 - etc.
+                
+        This implementation supports DDP training by ensuring that each process gets a unique subset of the data based on its rank.
         """
         B,T = self.batch_size, self.seq_size
         
@@ -173,7 +179,7 @@ class DataLoaderLite:
 
         xb = buf[:-1].view(B,T) # inputs
         yb = buf[1:].view(B,T)  # targets (shifted) 
-        self.current_position += B * T * self.num_processes # New! advance the current position by B*T*num_processes tokens to ensure each process gets a unique subset of the data
+        self.current_position += B * T * self.num_processes # advance the current position by B*T*num_processes tokens to ensure each process gets a unique subset of the data
 
         # If we reach the end of the tokens, reset to the beginning
         if self.current_position + (B * T * self.num_processes + 1) > len(data):
@@ -184,14 +190,14 @@ class DataLoaderLite:
 
         return xb, yb  
 
-# New! Macro batch: We will repeat the forward - backward grad_accumulation_steps times to simulate a larger batch size. We will call this micro-step.
+# Macro batch: We will repeat the forward - backward grad_accumulation_steps times to simulate a larger batch size. We will call this micro-step.
 macro_batch_size = 2*config.batch_size * config.seq_size #config.macro_batch_size # 2**19  approx. 0.5M like in the paper
 total_batch_size = config.batch_size * config.seq_size  # Total batch size across all processes (DDP)
 assert macro_batch_size % (total_batch_size*ddp_world_size) == 0, "macro_batch_size must be divisible by total_batch_size * ddp_world_size"
 grad_accumulation_steps = macro_batch_size // (total_batch_size*ddp_world_size)
 
 # Create dataloader instance
-train_loader = DataLoaderLite(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size) # New! Adapted to DDP
+train_loader = DataLoaderLite(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size)
 
 # =============================================================================
 # MODEL INITIALIZATION
@@ -201,21 +207,18 @@ cprint("MODEL INITIALIZATION", compute_color)
 
 
 # Create model instance
-#model = GPT2Model.from_pretrained('gpt2') # Load the pre-trained GPT-2 model from Huggingface
 model = GPT2Model(config)
 model.to(device) # this only works for the model, for tensors do tensor = tensor.to(device)
 
-# New! https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html 
-# Speed ups the model with PyTorch 2.0's compile feature (optional, but recommended for performance). 
-# Speedup mainly comes from reducing Python overhead and GPU read/writes, and so the observed speedup 
-# may vary on factors such as model architecture and batch size
-model = torch.compile(model) if TORCH_COMPILATION else model 
 
-# New! DDP
-if ddp:
-    print(f"Initializing DDP for model on device {compute_device} with local rank {ddp_local_rank}")
+# Speed ups the model with PyTorch 2.0's compile feature (optional, but recommended for performance) 
+# https://docs.pytorch.org/tutorials/intermediate/torch_compile_tutorial.html 
+if TORCH_COMPILATION:
+    model = torch.compile(model)
+
+# DDP Wrapper for the model
+if DDP_ACTIVE:
     model = DDP(model, device_ids = [ddp_local_rank]) # TODO: this is not working with 1 GPU, need to investigate
-raw_model = model.module if ddp else model  # Get the raw model for parameter counting and summary
 
 # Count model parameters
 total_params = sum(p.numel() for p in model.parameters())
@@ -250,7 +253,6 @@ cprint(model_summary, compute_color)
 def get_lr(step: int, config: ModelConfig) -> float:
     """
     Get the learning rate for the current training step.
-    
     Uses a cosine decay schedule with warmup.
     """
     max_lr = config.lr  # Maximum learning rate
@@ -260,7 +262,7 @@ def get_lr(step: int, config: ModelConfig) -> float:
     # (1) warmup
     if step < lr_warmup_steps:
         return max_lr * (step+1) / lr_warmup_steps  # Linear warmup
-    # (2) decay
+    # (2) cosine decay
     elif step >= lr_warmup_steps and step <= total_steps and config.lr_decay:
         decay_ratio = (step - lr_warmup_steps) / (total_steps - lr_warmup_steps)
         assert 0 <= decay_ratio <= 1
@@ -281,53 +283,60 @@ cprint("TRAINING", compute_color)
 losses_accumulated, lrs, norms, durations, tokens_per_sec = [], [], [], [], []
 
 # Initialize optimizer
-optimizer = raw_model.configure_optimizers(config, device_type=device_type)
+if DDP_ACTIVE:
+    optimizer = model.module.configure_optimizers(config, device_type=device_type)
+else:
+    optimizer = model.configure_optimizers(config, device_type=device_type)
 
-start_train_loop = datetime.now() # Record start time of training
+start_train_loop = datetime.now()
 for step in range(config.training_steps):
     # EVALUATION PHASE
     # TODO
-    
+    model.eval()
     # TRAINING PHASE
     t0 = time.time()
     model.train()
     optimizer.zero_grad() # Reset gradients
 
-    # New! Simulate larger batch size by repeating the forward - backward grad_accumulation_steps times
+    # Macro/Micro Batch (New!)
+    # We will accumulate gradients over multiple micro-steps to simulate a larger macro batch size
     loss_accumulation = 0.0
     for micro_step in range(grad_accumulation_steps):
+        
         # Sample a batch random of training data
         xb, yb = train_loader.next_batch()
-        
-        if ddp:
+
+        if DDP_ACTIVE:
             model.require_backward_grad_sync = (micro_step == grad_accumulation_steps - 1)  # Only sync gradients on the last micro-step
-            
-        # New! Use autocast for mixed precision training: https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html
-        if AUTOCAST:
-            with torch.autocast(device_type=device_type, dtype=torch.bfloat16 if device_type == "cuda" else torch.float32): 
-                logits, loss = model(xb, yb)
-        else:
-            logits, loss = model(xb, yb) # Forward pass
         
-        loss = loss / grad_accumulation_steps # Important step to keep the loss the same even when we accumulate gradients over multiple micro-steps
+        # Forward pass
+        with (torch.autocast(device_type=device_type, dtype=torch.bfloat16 if device_type == "cuda" else torch.float32) if AUTOCAST else nullcontext()):
+            logits, loss = model(xb, yb)
+        
+        loss = loss / grad_accumulation_steps # Scale the loss by the number of micro-steps to average it out
         loss_accumulation += loss.detach()  # Accumulate loss over micro-steps
         
-        
-        loss.backward() # Backward pass
+        # Backward pass
+        loss.backward()
 
-    if ddp:
-        torch.distributed.all_reduce(loss_accumulation, op=torch.distributed.ReduceOp.AVG)  # Aggregate loss across all processes in DDP
-        # Agter this loss_acumulation contains the average loss across all processes and its the same in all processes
-        # This is important for logging and metrics, as we want to log the same loss across all processes
+    if DDP_ACTIVE:
+
+        dist.all_reduce(loss_accumulation, op=dist.ReduceOp.SUM)  # Aggregate loss across all processes in DDP
+        loss_accumulation /= ddp_world_size  # Average the loss across all DDP processes
+        # Note! dist.ReduceOp.AVG is not a primitive operation and failed with 'goo' backend, while SUM is primitive operation that does not fail. Manually dividing by ddp_world_size later gets the average loss across all processes.
         
-    # New! Clipping gradients to stabilize training and avoid exploding gradients
+    # Clipping gradients: stabilize training 
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) if config.gradient_clipping else None
-    # New! Determine and set the learning rate for this step
+
+    # Learning Rate Scheduler
     lr = get_lr(step, config)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-    optimizer.step() # Update weights
+    # Update weights
+    optimizer.step() 
+    
+    
     torch.cuda.synchronize() if device_type == "cuda" else None  # Synchronize for accurate timing
     t1 = time.time()
     dt = t1 - t0
@@ -344,9 +353,8 @@ for step in range(config.training_steps):
 
     cprint(f"Step {step+1:03d} | Loss accum: {loss_accumulation:.4} | lr: {lr:.4e} | norm: {norm:.4e} | dt: {dt:.4}s | Tokens/sec: {tokens_per_second}", compute_color)
 
-end_train_loop = datetime.now() # Record start time of training
-total_time = end_train_loop - start_train_loop
-cprint(f"\nTraining completed in {total_time} (HH:MM:SS)", compute_color)
+end_train_loop = datetime.now()
+cprint(f"\nTraining completed in {end_train_loop - start_train_loop} (HH:MM:SS)", compute_color)
 
 # Save plots to files
 plt.figure(figsize=(20, 12))
@@ -448,4 +456,4 @@ plt.savefig('training_metrics_summary.png')
 #     generated_text = tokenizer.decode(generated_tokens)  # Decode the tokens to text
 #     print(f"Generated text {i+1}: <START>", colored(generated_text, "cyan"), "<END>")
 
-destroy_process_group() if ddp else None  # Clean up DDP resources
+dist.destroy_process_group() if DDP_ACTIVE else None  # Clean up DDP resources
