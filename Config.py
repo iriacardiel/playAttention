@@ -92,7 +92,7 @@ in the paper, around 0.5 M "macro" batch size was used
 2**19 = 524288 ~ 0.5M TOKENS PER STEP (macro batch size)
 
 (III) tokens to process with the fineweb dataset
-10**9 = 10000000000 TOTAL TOKENS in the training dataset (?) check why
+100M tokens per shard, total of 100 shards = 10e9 tokens TOTAL TOKENS
 
 (IV) training_steps
 that gives 19073 training steps = 10e9 tokens / 524288 tokens per step

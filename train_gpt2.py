@@ -91,7 +91,7 @@ torch.set_float32_matmul_precision('high') if TENSOR_CORES else None
 
 # File paths
 TRAIN_ID = datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
-DATA_PATH = 'data/tinyshakespeare.txt'
+DATA_PATH = 'data/tiny_shakespeare/text/tinyshakespeare.txt'
 
 # =============================================================================
 # HYPERPARAMETERS
