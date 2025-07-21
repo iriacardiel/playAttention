@@ -453,13 +453,13 @@ def update_visualizations(step, train_losses, val_losses, losses, steps_recorded
 @torch.no_grad()
 def estimate_loss():
     """
-    Calculates mean loss over val_loss_steps batches, for each the training and the validation splits.
+    Calculates mean loss over eval_loss_steps batches, for each the training and the validation splits.
     """
     mean_losses = {}
     model.eval() # indicate the model is in 'evaluation' mode
     for split in ['train', 'val']:
-        losses = torch.zeros(config.val_loss_steps)
-        for k in range(config.val_loss_steps): 
+        losses = torch.zeros(config.eval_loss_steps)
+        for k in range(config.eval_loss_steps): 
             X,Y = train_loader.next_batch() if split == 'train' else val_loader.next_batch() # Get a batch of data
             _, loss = model(X,Y)
             losses[k] = loss.item()
@@ -497,7 +497,7 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
 
     # EVALUATION PHASE
     # -------------------------------------------------------------------------------------------------------------------------------------
-    # (1) Once every eval_interval steps, evaluate the model on the validation set for val_loss_steps steps
+    # (1) Once every eval_interval steps, evaluate the model on the validation set for eval_loss_steps steps
     if step % config.eval_interval == 0 or last_step:
         losses = estimate_loss()
         starting_limits_ffn, starting_limits_pwe = update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model, starting_limits_ffn, starting_limits_pwe)
@@ -636,7 +636,7 @@ report = f"""# Training Report
 | training_steps                 | `{config.training_steps:,}`  | | |                         |                                                  | | |                      |                                                                         |
 | lr                  | `{config.lr}`     | | |                         |                                                  | | |                      |                                                                         |
 | eval_interval                  | `{config.eval_interval}`     | | |                         |                                                  | | |                      |                                                                         |
-| val_loss_steps                     | `{config.val_loss_steps}`        | | |                         |                                                  | | |                      |                                                                         |
+| eval_loss_steps                     | `{config.eval_loss_steps}`        | | |                         |                                                  | | |                      |                                                                         |
 
 
 """

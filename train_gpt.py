@@ -219,7 +219,8 @@ class DataLoaderFromTxt:
 
 # Create dataloader instance
 train_loader = DataLoaderFromTxt(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split = 'train')
-val_loader = DataLoaderFromTxt(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split = 'val')
+val_loader_logs = DataLoaderFromTxt(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split = 'val')
+train_loader_logs = DataLoaderFromTxt(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split = 'train')
 
 # Macro batch: We will repeat the forward - backward grad_accumulation_steps times to simulate a larger batch size. We will call this micro-step.
 tokens_per_step = config.tokens_per_step #config.tokens_per_step # 2**19  approx. 0.5M like in the paper
@@ -332,30 +333,40 @@ with open(log_file, "w") as f: # open for writing to clear the file
     f.write(header_row)
 
 start_train_loop = datetime.now()
-for step in trange(config.training_steps, desc="Training steps", unit="step", disable=False):
+pbar = trange(config.training_steps, desc="Training steps", unit="step", disable=not master_process, colour=compute_color)
+for step in pbar:
     last_step = (step == config.training_steps - 1)
     t0 = time.time()
 
-
     # EVALUATION PHASE
     # -------------------------------------------------------------------------------------------------------------------------------------
-    # (1) Once every eval_interval steps, evaluate the model on the validation set for val_loss_steps steps
+    # (1) Once every eval_interval steps, evaluate the model on the validation set for eval_loss_steps steps
     if step % config.eval_interval == 0 or last_step:
         model.eval()
-        val_loader.reset()  # Reset the validation loader to the start of the validation data
+        val_loader_logs.reset()  # Reset the validation loader to the start of the validation data
+        train_loader_logs.reset()  # Reset the training loader to the start of the training data
         with torch.no_grad():
-            val_loss_accum = 0.0
-            for _ in range(config.val_loss_steps):
-                xb, yb = val_loader.next_batch()
+            val_loss_log = 0.0
+            train_loss_log = 0.0
+            for _ in range(config.eval_loss_steps):
+                xb_val, yb_val = val_loader_logs.next_batch()
                 with torch.autocast(device_type=device_type, dtype=torch.bfloat16 if device_type == "cuda" else torch.float32) if AUTOCAST else nullcontext():
-                    _, loss = model(xb, yb)
-                    loss = loss / config.val_loss_steps
-                    val_loss_accum += loss.detach()  # Accumulate validation loss
+                    _, val_loss = model(xb_val, yb_val)
+                    val_loss = val_loss / config.eval_loss_steps
+                    val_loss_log += val_loss.detach()  # Accumulate validation loss
+
+                xb_train, yb_train = train_loader_logs.next_batch()
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16 if device_type == "cuda" else torch.float32) if AUTOCAST else nullcontext():
+                    _, train_loss = model(xb_train, yb_train)
+                    train_loss = train_loss / config.eval_loss_steps
+                    train_loss_log += train_loss.detach()  # Accumulate training loss
 
         if DDP_ACTIVE:
-            dist.all_reduce(val_loss_accum, op=dist.ReduceOp.SUM)
-            val_loss_accum /= ddp_world_size  # Average the validation loss across all DDP processes
-        
+            dist.all_reduce(val_loss_log, op=dist.ReduceOp.SUM)
+            val_loss_log /= ddp_world_size  # Average the validation loss across all DDP processes
+            dist.all_reduce(train_loss_log, op=dist.ReduceOp.SUM)
+            train_loss_log /= ddp_world_size  # Average the training loss across all DDP processes
+
         if master_process:
             pass
             # TODO Checkpoints
@@ -460,8 +471,8 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
     # LOGGING EVALUATION AND TRAINING METRICS
     # ---------------------------------------------------------------------------------------------------------------------------------------
     if master_process:
-        csv_row = f"{step}; {train_loss_acc:.4}; {val_loss_accum:.4}; {lr:.4}; {norm:.4}; {dt:.4}; {tokens_per_second};\n"
-        #terminal_row = f"step {step}; train_loss_acc {train_loss_acc:.4}; val_loss_accum {val_loss_accum:.4}; lr {lr:.4}; norm {norm:.4}; dt {dt:.4}; tokens_per_second {tokens_per_second};\n"
+        csv_row = f"{step}; {train_loss_log:.4}; {val_loss_log:.4}; {lr:.4}; {norm:.4}; {dt:.4}; {tokens_per_second};\n"
+        #terminal_row = f"step {step}; train_loss_log {train_loss_log:.4}; val_loss_log {val_loss_log:.4}; lr {lr:.4}; norm {norm:.4}; dt {dt:.4}; tokens_per_second {tokens_per_second};\n"
         #cprint(terminal_row, compute_color)
 
         if step % config.eval_interval == 0 or last_step:
@@ -469,8 +480,8 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
                 f.write(csv_row)
 
             # Store metrics for plotting
-            train_loss_list.append(train_loss_acc.cpu().item() if train_loss_acc.is_cuda else train_loss_acc.item())  # Convert to Python float for plotting
-            val_loss_list.append(val_loss_accum.cpu().item() if val_loss_accum.is_cuda else val_loss_accum.item())
+            train_loss_list.append(train_loss_log.cpu().item() if train_loss_log.is_cuda else train_loss_log.item())  # Convert to Python float for plotting
+            val_loss_list.append(val_loss_log.cpu().item() if val_loss_log.is_cuda else val_loss_log.item())
             lr_list.append(lr)
             norm_list.append(norm.cpu().item() if norm.is_cuda else norm.item())
             duration_list.append(dt)
@@ -484,7 +495,7 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
             plt.plot(steps_list, val_loss_list, label='Val Loss')
             plt.xlabel('Step')
             plt.ylabel('Loss')
-            plt.yticks(np.arange(min(train_loss_list)-1, max(train_loss_list) + 1, 1))  # Set y-ticks for better readability
+            plt.yticks(np.arange(min(train_loss_list)-1, max(train_loss_list) + 1, 0.1))  # Set y-ticks for better readability
             plt.title('Loss over Steps')
             plt.legend()
             plt.grid(True)
@@ -527,7 +538,7 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
             plt.plot(steps_list, tokens_per_sec_list, label='Tokens/sec', color='purple')
             plt.xlabel('Step')
             plt.ylabel('Tokens/sec')
-            plt.yticks(np.arange(0, max(tokens_per_sec_list) + 10000, 10000))  # Set y-ticks for better readability
+            plt.yticks(np.arange(0, max(tokens_per_sec_list) + 1000, 500))  # Set y-ticks for better readability
             plt.title('Tokens/sec over Steps')
             plt.legend()
             plt.grid(True)
@@ -536,13 +547,20 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
             plt.savefig(f'{REPORT_DIR}/training_metrics_summary.png')
   
         plt.close('all')
+        pbar.postfix = f"train_loss_acc {train_loss_acc}"  # Update the progress bar postfix with the current step
+
 
  
   
 end_train_loop = datetime.now()
 if master_process:
     cprint(f"\nTraining completed in {end_train_loop - start_train_loop} (HH:MM:SS)", compute_color)
-
+    # Save configuration as JSON
+    with open(f'{REPORT_DIR}/config.json', 'w', encoding='utf-8') as f:
+        config_dict = config.model_dump()
+        #config_dict["compute_device"] = compute_device
+        #config_dict["selected_tokenizer"] = tokenizer.name
+        f.write(json.dumps(config_dict, indent=2))
 # # =============================================================================
 # # INFERENCE & TEXT GENERATION
 # # =============================================================================
@@ -596,7 +614,7 @@ if master_process:
 # | training_steps                 | `{config.training_steps:,}`  | | |                         |                                                  | | |                      |                                                                         |
 # | lr                  | `{config.lr}`     | | |                         |                                                  | | |                      |                                                                         |
 # | eval_interval                  | `{config.eval_interval}`     | | |                         |                                                  | | |                      |                                                                         |
-# | val_loss_steps                     | `{config.val_loss_steps}`        | | |                         |                                                  | | |                      |                                                                         |
+# | eval_loss_steps                     | `{config.eval_loss_steps}`        | | |                         |                                                  | | |                      |                                                                         |
 
 
 # """
@@ -604,12 +622,7 @@ if master_process:
 # with open(f'{REPORT_DIR}/report.md', 'w', encoding='utf-8') as f:
 #     f.write(report)
     
-# # Save configuration as JSON
-# with open(f'{REPORT_DIR}/config.json', 'w', encoding='utf-8') as f:
-#     config_dict = config.model_dump()
-#     #config_dict["compute_device"] = compute_device
-#     #config_dict["selected_tokenizer"] = tokenizer.name
-#     f.write(json.dumps(config_dict, indent=2))
+
 
 
 
