@@ -139,6 +139,27 @@ class DataLoaderFromTokenShards:
     
     # Batch generator
     def next_batch(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Generate a batch of input-target pairs for training.
+            
+            How batching works:
+            - Sample random starting positions in the dataset
+            - Extract sequences of length seq_size starting from those positions
+            - Create targets by shifting input sequences by one position
+            
+            Example with seq_size=5, batch_size=2:
+                Input:  [[23, 30, 31, 7, 21], [45, 12, 8, 33, 9]]
+                Target: [[30, 31, 7, 21, 14], [12, 8, 33, 9, 41]]
+            
+            This gives us seq_size training examples per sequence:
+                - Predict 30 given [23]
+                - Predict 31 given [23, 30]
+                - Predict 7 given [23, 30, 31]
+                - etc.
+                
+        This implementation supports DDP training by ensuring that each process gets a unique subset of the data based on its rank.
+        This implementation assumes that the data is already tokenized and stored in numpy arrays in the specified shard files.
+        """
         
         B,T = self.B, self.T
         
@@ -169,89 +190,7 @@ class DataLoaderFromTokenShards:
 
         return xb, yb
 
-class DataLoaderFromTxt:
-    def __init__(self, B:int, T:int, process_rank:int=0, num_processes:int=1, split:Optional[Literal['train', 'val']]='train'):
-        self.B = B
-        self.T = T
-        self.process_rank = process_rank
-        self.num_processes = num_processes
-        assert split in {'train','val'} # NOT IMPLEMENTED
-
-        # At init load tokens from disk and store them in memory
-        try:
-            with open(DATA_PATH, 'r', encoding='utf-8') as f:
-                text = f.read()
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Data file not found: {DATA_PATH}")
-        
-        tokens = tokenizer.encode(text)  # Encode the text into tokens
-        self.tokens = torch.tensor(tokens, dtype=torch.long)
-        cprint(f"loaded {len(self.tokens)} tokens", compute_color)
-        cprint(f"1 epoch = {len(self.tokens)// (self.B*self.T)} batches", compute_color)
-        
-        self.vocab_size = tokenizer.n_vocab
-        self.current_position = self.process_rank * self.B * self.T  # state: initialize current position based on process rank to ensure each process gets a unique subset of the data
-
-        data_preparation_summary = (
-            f"\nTokenziation summary:\n"
-            f"  Tokenizer: {tokenizer.name}\n"
-            f"  Tokenized text: {len(self.tokens):,} tokens\n"
-            f"  Vocabulary size: {tokenizer.n_vocab} unique tokens\n"
-        )
-        
-        cprint(data_preparation_summary, compute_color)
-    
-    # Batch generator
-    def next_batch(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Generate a batch of input-target pairs for training.
-            
-            How batching works:
-            - Sample random starting positions in the dataset
-            - Extract sequences of length seq_size starting from those positions
-            - Create targets by shifting input sequences by one position
-            
-            Example with seq_size=5, batch_size=2:
-                Input:  [[23, 30, 31, 7, 21], [45, 12, 8, 33, 9]]
-                Target: [[30, 31, 7, 21, 14], [12, 8, 33, 9, 41]]
-            
-            This gives us seq_size training examples per sequence:
-                - Predict 30 given [23]
-                - Predict 31 given [23, 30]
-                - Predict 7 given [23, 30, 31]
-                - etc.
-                
-        This implementation supports DDP training by ensuring that each process gets a unique subset of the data based on its rank.
-        """
-        B,T = self.B, self.T
-        
-        data = self.tokens
-        
-        # Ensure current_position does not exceed data length
-        if self.current_position >= len(data):
-            self.current_position = self.process_rank * B * T
-
-        buf = data[self.current_position: self.current_position+ B*T + 1]
-
-        # Safeguard against empty slices
-        if len(buf) < B * T + 1:
-            raise ValueError(f"Insufficient data to generate batch: requested {B * T + 1}, but got {len(buf)}")
-
-        xb = buf[:-1].view(B,T) # inputs
-        yb = buf[1:].view(B,T)  # targets (shifted) 
-        self.current_position += B * T * self.num_processes # advance the current position by B*T*num_processes tokens to ensure each process gets a unique subset of the data
-
-        # If we reach the end of the tokens, reset to the beginning
-        if self.current_position + (B * T * self.num_processes + 1) > len(data):
-            self.current_position = self.process_rank * B * T
-
-        # Move to compute device (GPU or CPU)
-        xb, yb = xb.to(device), yb.to(device)
-
-        return xb, yb  
-
 # Create dataloader instance
-#train_loader = DataLoaderFromTxt(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size)
 train_loader = DataLoaderFromTokenShards(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split='train')
 
 # Macro batch: We will repeat the forward - backward grad_accumulation_steps times to simulate a larger batch size. We will call this micro-step.

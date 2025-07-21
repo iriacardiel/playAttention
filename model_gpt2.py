@@ -352,10 +352,6 @@ class GPT2Model(nn.Module):
             {'params': decay_params, 'weight_decay': config.weight_decay},
             {'params': nodecay_params, 'weight_decay': 0.0}
         ]
-        num_decay_params = sum(p.numel() for p in decay_params)
-        num_nodecay_params = sum(p.numel() for p in nodecay_params)
-        #print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
-        #print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
        
         # Create AdamW optimizer and use the fused version if it is available
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
