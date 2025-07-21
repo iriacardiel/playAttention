@@ -131,12 +131,17 @@ class DataLoaderFromTokenShards:
         assert len(shard_names) > 0, f"No shard files found for split {split}"
         cprint(f"found {len(shard_names)} for split {split}", compute_color)
 
-        self.current_shard = 0 # state: start with the first shard
-        self.tokens = torch.tensor(np.load(shard_names[self.current_shard]), dtype = torch.long)  # Convert to long tensor
-        self.current_position = self.process_rank * self.B * self.T  # state: initialize current position based on process rank to ensure each process gets a unique subset of the data
+        self.reset()
         self.vocab_size = tokenizer.n_vocab
 
-    
+    def reset(self):
+        """
+        Reset the data loader to the initial state.
+        """
+        self.current_shard = 0
+        self.tokens = torch.tensor(np.load(self.shard_names[self.current_shard]), dtype = torch.long)  # Convert to long tensor
+        self.current_position = self.process_rank * self.B * self.T  # state: initialize current position based on process rank to ensure each process gets a unique subset of the data
+        
     # Batch generator
     def next_batch(self) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -192,6 +197,7 @@ class DataLoaderFromTokenShards:
 
 # Create dataloader instance
 train_loader = DataLoaderFromTokenShards(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split='train')
+val_loader = DataLoaderFromTokenShards(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split='val')
 
 # Macro batch: We will repeat the forward - backward grad_accumulation_steps times to simulate a larger batch size. We will call this micro-step.
 tokens_per_step = config.tokens_per_step #config.tokens_per_step # 2**19  approx. 0.5M like in the paper
@@ -297,17 +303,86 @@ else:
 
 start_train_loop = datetime.now()
 for step in range(config.training_steps):
-    # EVALUATION PHASE
-    # TODO
-    model.eval()
-    # TRAINING PHASE
+    
     t0 = time.time()
+     
+    # EVALUATION PHASE
+    # -------------------------------------------------------------------------------------------------------------------------------------
+    eval_interval = 10  # Evaluate every 10 steps
+    val_loss_steps = 10  # Number of steps to average validation loss over
+    # (1) Once every eval_interval steps, evaluate the model on the validation set for val_loss_steps steps
+    if step % eval_interval == 0:
+        model.eval()
+        val_loader.reset()  # Reset the validation loader to the start of the validation data
+        with torch.no_grad():
+            val_loss_accum = 0.0
+            val_loss_steps = 10  # Number of steps to average validation loss over
+            for _ in range(val_loss_steps):
+                xb, yb = val_loader.next_batch()
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16 if device_type == "cuda" else torch.float32) if AUTOCAST else nullcontext():
+                    _, loss = model(xb, yb)
+                    loss = loss / val_loss_steps
+                    val_loss_accum += loss.detach()  # Accumulate validation loss
+
+        if DDP_ACTIVE:
+            dist.all_reduce(val_loss_accum, op=dist.ReduceOp.SUM)
+            val_loss_accum /= ddp_world_size  # Average the validation loss across all DDP processes
+        cprint(f"Validation Loss at step {step+1:03d}: {val_loss_accum:.4f}", compute_color)
+
+    # (2) Once every eval_interval steps generate text from the model
+    if step % eval_interval == 0:
+        # Context tokens
+        context_text = "Hello, I'm a language model,"
+        context_tokens = tokenizer.encode(context_text)
+        context_tokens = torch.tensor(context_tokens, dtype=torch.long) # 1, 8
+
+        # Manually generating a batch with the same sequence context_tokens 5 times 
+        num_generated_sequences = 5
+        context_tokens = context_tokens.unsqueeze(0).repeat(num_generated_sequences, 1) # 5, 8
+        idx = context_tokens.to(device)
+        sample_rgn = torch.Generator(device=device)  # Create a random number generator for sampling, to avoid using the global random state and affect the training process
+        sample_rgn.manual_seed(seed + ddp_rank)  # Seed the random number generator with the current step for reproducibility
+        max_new_tokens = 30
+
+        # Generate from context tokens (manually instead of using model.generate() not implemented yet)
+        while idx.size(1) < max_new_tokens:
+
+            with torch.no_grad():
+                # right now idx is (B, T) where B = 5, T = 8
+
+                # forward the model
+                logits, _ = model(idx)  # (B, T, vocab_size)
+
+                # Focus on the last time step (next token prediction)
+                logits = logits[:, -1, :] # (B, vocab_size) 
+
+                # Convert to probabilities
+                probs = F.softmax(logits, dim = -1) # (B, vocab_size)
+
+                # Do top-k sampling of 50 (huggingface default pipeline)
+                # topk_probs here becomes (5,50) and topk_indices becomes (5,50)
+                topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)  # Get top 50 probabilities and indices
+                ix = torch.multinomial(topk_probs, num_samples=1, generator=sample_rgn)  # Select a token from the top 50 probabilities (B, 1)
+                xcol = torch.gather(topk_indices, -1, ix) # Gather the corresponding token indices based on the sampled probabilities
+                
+                # Append to sequence
+                idx = torch.cat((idx, xcol), dim = 1) # (B, T+1)
+
+        # print the generated sequences
+        for i in range(num_generated_sequences):
+            generated_tokens = idx[i, :max_new_tokens].tolist() # Get the generated tokens for this sequence
+            generated_text = tokenizer.decode(generated_tokens)  # Decode the tokens to text
+            cprint(f"DDP rank {ddp_rank} - Generated text {i+1}: <START> {generated_text}<END>", compute_color)
+        
+    
+    # TRAINING PHASE
+    # ---------------------------------------------------------------------------------------------------------------------------------------
     model.train()
     optimizer.zero_grad() # Reset gradients
 
     # Macro/Micro Batch
     # We will accumulate gradients over multiple micro-steps to simulate a larger macro batch size
-    loss_accumulation = 0.0
+    train_loss_acc = 0.0
     for micro_step in range(grad_accumulation_steps):
         
         # Sample a batch random of training data
@@ -321,15 +396,15 @@ for step in range(config.training_steps):
             logits, loss = model(xb, yb)
         
         loss = loss / grad_accumulation_steps # Scale the loss by the number of micro-steps to average it out
-        loss_accumulation += loss.detach()  # Accumulate loss over micro-steps
+        train_loss_acc += loss.detach()  # Accumulate loss over micro-steps
         
         # Backward pass
         loss.backward()
 
     if DDP_ACTIVE:
 
-        dist.all_reduce(loss_accumulation, op=dist.ReduceOp.SUM)  # Aggregate loss across all processes in DDP
-        loss_accumulation /= ddp_world_size  # Average the loss across all DDP processes
+        dist.all_reduce(train_loss_acc, op=dist.ReduceOp.SUM)  # Aggregate loss across all processes in DDP
+        train_loss_acc /= ddp_world_size  # Average the loss across all DDP processes
         # Note! dist.ReduceOp.AVG is not a primitive operation and failed with 'goo' backend, while SUM is primitive operation that does not fail. Manually dividing by ddp_world_size later gets the average loss across all processes.
         
     # Clipping gradients: stabilize training 
@@ -352,13 +427,13 @@ for step in range(config.training_steps):
     tokens_per_second = tokens_processed / dt
 
     # Store metrics for plotting
-    losses_accumulated.append(loss_accumulation.cpu().item() if loss_accumulation.is_cuda else loss_accumulation.item())  # Convert to Python float for plotting
+    losses_accumulated.append(train_loss_acc.cpu().item() if train_loss_acc.is_cuda else train_loss_acc.item())  # Convert to Python float for plotting
     lrs.append(lr)
     norms.append(norm.cpu().item() if norm.is_cuda else norm.item())
     durations.append(dt)
     tokens_per_sec.append((tokens_per_second))
 
-    cprint(f"Step {step+1:03d} | Loss accum: {loss_accumulation:.4} | lr: {lr:.4e} | norm: {norm:.4e} | dt: {dt:.4}s | Tokens/sec: {tokens_per_second}", compute_color)
+    cprint(f"Step {step+1:03d} | Train Loss Accum: {train_loss_acc:.4} | lr: {lr:.4e} | norm: {norm:.4e} | dt: {dt:.4}s | Tokens/sec: {tokens_per_second}", compute_color)
 
 end_train_loop = datetime.now()
 cprint(f"\nTraining completed in {end_train_loop - start_train_loop} (HH:MM:SS)", compute_color)
