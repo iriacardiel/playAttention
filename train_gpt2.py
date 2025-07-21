@@ -292,7 +292,6 @@ def get_lr(step: int, config: ModelConfig) -> float:
     else: 
         return min_lr
 
-
 # =============================================================================
 # TRAINING 
 # =============================================================================
@@ -301,7 +300,7 @@ cprint("TRAINING", compute_color)
 
 
 # Initialize lists to store metrics for plotting
-losses_accumulated, lrs, norms, durations, tokens_per_sec = [], [], [], [], []
+train_loss_list, val_loss_list, lr_list, norm_list, duration_list, tokens_per_sec_list = [], [], [], [], [], []
 
 # Initialize optimizer
 if DDP_ACTIVE:
@@ -309,9 +308,10 @@ if DDP_ACTIVE:
 else:
     optimizer = model.configure_optimizers(config, device_type=device_type)
 
-log_file = os.path.join(REPORT_DIR, f"log.txt")
+log_file = os.path.join(REPORT_DIR, f"log.csv")
+header_row = f"Step; Train Loss Accum; Val Loss Accum ; lr;  norm ;  dt (s);  Tokens/s;\n"
 with open(log_file, "w") as f: # open for writing to clear the file
-    pass
+    f.write(header_row)
 
 start_train_loop = datetime.now()
 for step in range(config.training_steps):
@@ -338,14 +338,13 @@ for step in range(config.training_steps):
             dist.all_reduce(val_loss_accum, op=dist.ReduceOp.SUM)
             val_loss_accum /= ddp_world_size  # Average the validation loss across all DDP processes
         
-        cprint(f"Validation Loss at step {step+1:03d}: {val_loss_accum:.4f}", compute_color)
         if master_process:
-            print(f"validation loss: {val_loss_accum.item():.4f}")
-            with open(log_file, "a") as f:
-                f.write(f"{step} val {val_loss_accum.item():.4f}\n")
+            pass
+            # TODO Checkpoints
+            
 
     # (2) Once every eval_interval steps generate text from the model
-    if step % config.eval_interval == 0 or last_step:
+    if (step % config.eval_interval == 0 or last_step) and False:
         # Context tokens
         context_text = "Hello, I'm a language model,"
         context_tokens = tokenizer.encode(context_text)
@@ -440,119 +439,91 @@ for step in range(config.training_steps):
     tokens_processed = train_loader.B * train_loader.T * grad_accumulation_steps * ddp_world_size # Total tokens processed in this step
     tokens_per_second = tokens_processed / dt
 
+    # LOGGING EVALUATION AND TRAINING METRICS
+    # ---------------------------------------------------------------------------------------------------------------------------------------
     if master_process:
-        cprint(f"Step {step+1:03d} | Train Loss Accum: {train_loss_acc:.4} | lr: {lr:.4e} | norm: {norm:.4e} | dt: {dt:.4}s | Tokens/sec: {tokens_per_second}", compute_color)
-        with open(log_file, "a") as f:
-            f.write(f"{step} train {train_loss_acc.item():.6f}\n")
-        # Store metrics for plotting
-        losses_accumulated.append(train_loss_acc.cpu().item() if train_loss_acc.is_cuda else train_loss_acc.item())  # Convert to Python float for plotting
-        lrs.append(lr)
-        norms.append(norm.cpu().item() if norm.is_cuda else norm.item())
-        durations.append(dt)
-        tokens_per_sec.append((tokens_per_second))
-        
+        csv_row = f"{step}; {train_loss_acc:.4}; {val_loss_accum:.4}; {lr:.4}; {norm:.4}; {dt:.4}; {tokens_per_second};\n"
+        #terminal_row = f"step {step}; train_loss_acc {train_loss_acc:.4}; val_loss_accum {val_loss_accum:.4}; lr {lr:.4}; norm {norm:.4}; dt {dt:.4}; tokens_per_second {tokens_per_second};\n"
+        #cprint(terminal_row, compute_color)
+
+        if step % config.eval_interval == 0 or last_step:
+            with open(log_file, "a") as f:
+                f.write(csv_row)
+
+            # Store metrics for plotting
+            train_loss_list.append(train_loss_acc.cpu().item() if train_loss_acc.is_cuda else train_loss_acc.item())  # Convert to Python float for plotting
+            val_loss_list.append(val_loss_accum.cpu().item() if val_loss_accum.is_cuda else val_loss_accum.item())
+            lr_list.append(lr)
+            norm_list.append(norm.cpu().item() if norm.is_cuda else norm.item())
+            duration_list.append(dt)
+            tokens_per_sec_list.append((tokens_per_second))
+            steps_list = np.linspace(0, step, num=len(train_loss_list), dtype=int)  # Create a list of steps for plotting
+            # Plot metrics in real-time
+            plt.figure(figsize=(20, 12))
+
+            # Loss plot
+            plt.plot(steps_list, train_loss_list, label='Train Loss')
+            plt.plot(steps_list, val_loss_list, label='Val Loss')
+            plt.xlabel('Step')
+            plt.ylabel('Loss')
+            plt.yticks(np.arange(min(train_loss_list)-1, max(train_loss_list) + 1, 1))  # Set y-ticks for better readability
+            plt.title('Loss over Steps')
+            plt.legend()
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig(f'{REPORT_DIR}/losses.png')
+
+            # Learning rate plot
+            plt.figure(figsize=(20, 12))
+
+            plt.subplot(2, 2, 1)
+            plt.plot(steps_list, lr_list, label='Learning Rate', color='orange')
+            plt.xlabel('Step')
+            plt.ylabel('Learning Rate')
+            plt.yticks(np.arange(0, max(lr_list) + 5e-5, 5e-5))  # Set y-ticks for better readability
+            plt.title('Learning Rate over Steps')
+            plt.legend()
+            plt.grid(True)
+
+            # Gradient norm plot
+            plt.subplot(2, 2, 2)
+            plt.plot(steps_list, norm_list, label='Gradient Norm', color='green')
+            plt.xlabel('Step')
+            plt.ylabel('Norm')
+            plt.title('Gradient Norm over Steps')
+            plt.legend()
+            plt.grid(True)
+
+            # Duration plot
+            plt.subplot(2, 2, 3)
+            plt.plot(steps_list, duration_list, label='Duration', color='red')
+            plt.xlabel('Step')
+            plt.ylabel('Duration (s)')
+            plt.yticks(np.arange(0, max(duration_list) + 0.1, 0.1))  # Set y-ticks for better readability
+            plt.title('Duration per Step')
+            plt.legend()
+            plt.grid(True)
+
+            # Tokens per second plot
+            plt.subplot(2, 2, 4)
+            plt.plot(steps_list, tokens_per_sec_list, label='Tokens/sec', color='purple')
+            plt.xlabel('Step')
+            plt.ylabel('Tokens/sec')
+            plt.yticks(np.arange(0, max(tokens_per_sec_list) + 10000, 10000))  # Set y-ticks for better readability
+            plt.title('Tokens/sec over Steps')
+            plt.legend()
+            plt.grid(True)
+
+            plt.tight_layout()
+            plt.savefig(f'{REPORT_DIR}/training_metrics_summary.png')
+  
+        plt.close('all')
+
+ 
+  
 end_train_loop = datetime.now()
 if master_process:
     cprint(f"\nTraining completed in {end_train_loop - start_train_loop} (HH:MM:SS)", compute_color)
 
-    # Save plots to files
-    plt.figure(figsize=(20, 12))
-
-    # Loss plot
-    plt.subplot(2, 2, 1)
-    plt.plot(losses_accumulated, label='Loss Accumulated')
-    plt.xlabel('Step')
-    plt.ylabel('Loss Accumulated')
-    plt.yticks(np.arange(min(losses_accumulated)-1, max(losses_accumulated) + 1, 1))  # Set y-ticks for better readability
-    plt.title('Loss over Steps')
-    plt.legend()
-    plt.grid(True)
-
-    # Learning rate plot
-    plt.subplot(2, 2, 2)
-    plt.plot(lrs, label='Learning Rate', color='orange')
-    plt.xlabel('Step')
-    plt.ylabel('Learning Rate')
-    plt.yticks(np.arange(0, max(lrs) + 5e-5, 5e-5))  # Set y-ticks for better readability
-    plt.title('Learning Rate over Steps')
-    plt.legend()
-    plt.grid(True)
-
-    # # Gradient norm plot
-    # plt.subplot(2, 3, 3)
-    # plt.plot(norms, label='Gradient Norm', color='green')
-    # plt.xlabel('Step')
-    # plt.ylabel('Norm')
-    # plt.title('Gradient Norm over Steps')
-    # plt.legend()
-    # plt.grid(True)
-
-    # Duration plot
-    plt.subplot(2, 2, 3)
-    plt.plot(durations, label='Duration', color='red')
-    plt.xlabel('Step')
-    plt.ylabel('Duration (s)')
-    plt.yticks(np.arange(0, max(durations) + 0.1, 0.1))  # Set y-ticks for better readability
-    plt.title('Duration per Step')
-    plt.legend()
-    plt.grid(True)
-
-    # Tokens per second plot
-    plt.subplot(2, 2, 4)
-    plt.plot(tokens_per_sec, label='Tokens/sec', color='purple')
-    plt.xlabel('Step')
-    plt.ylabel('Tokens/sec')
-    plt.yticks(np.arange(0, max(tokens_per_sec) + 10000, 10000))  # Set y-ticks for better readability
-    plt.title('Tokens/sec over Steps')
-    plt.legend()
-    plt.grid(True)
-
-    plt.tight_layout()
-    plt.savefig('training_metrics_summary.png')
-
-# # =============================================================================
-# # INFERENCE & TEXT GENERATION
-# # =============================================================================
-# # Context tokens
-# context_text = "Hello, I'm a language model,"
-# context_tokens = tokenizer.encode(context_text)
-# context_tokens = torch.tensor(context_tokens, dtype=torch.long) # 1, 8
-
-# # Manually generating a batch with the same sequence context_tokens 5 times 
-# num_generated_sequences = 5
-# context_tokens = context_tokens.unsqueeze(0).repeat(num_generated_sequences, 1) # 5, 8
-# idx = context_tokens.to(device)
-
-# max_new_tokens = 30
-
-# # Generate from context tokens (manually instead of using model.generate() not implemented yet)
-# while idx.size(1) < max_new_tokens:
-
-#     with torch.no_grad():
-#         # right now idx is (B, T) where B = 5, T = 8
-
-#         # forward the model
-#         logits, _ = model(idx)  # (B, T, vocab_size)
-
-#         # Focus on the last time step (next token prediction)
-#         logits = logits[:, -1, :] # (B, vocab_size) 
-
-#         # Convert to probabilities
-#         probs = F.softmax(logits, dim = -1) # (B, vocab_size)
-
-#         # Do top-k sampling of 50 (huggingface default pipeline)
-#         # topk_probs here becomes (5,50) and topk_indices becomes (5,50)
-#         topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)  # Get top 50 probabilities and indices
-#         ix = torch.multinomial(topk_probs, num_samples=1)  # Select a token from the top 50 probabilities
-#         xcol = torch.gather(topk_indices, -1, ix) # Gather the corresponding token indices based on the sampled probabilities
-        
-#         # Append to sequence
-#         idx = torch.cat((idx, xcol), dim = 1) # (B, T+1)
-
-# # print the generated sequences
-# for i in range(num_generated_sequences):
-#     generated_tokens = idx[i, :max_new_tokens].tolist() # Get the generated tokens for this sequence
-#     generated_text = tokenizer.decode(generated_tokens)  # Decode the tokens to text
-#     print(f"Generated text {i+1}: <START>", colored(generated_text, "cyan"), "<END>")
 
 dist.destroy_process_group() if DDP_ACTIVE else None  # Clean up DDP resources

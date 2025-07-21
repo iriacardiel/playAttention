@@ -309,6 +309,165 @@ def get_lr(step: int, config: ModelConfig) -> float:
     else: 
         return min_lr
 
+def train_val_loss_plot(train_losses: list, val_losses: list, steps_recorded: list):
+    step = steps_recorded[-1] if steps_recorded else 0  # Get the last recorded step
+    
+    # Initialize Loss Plot
+    fig_loss, ax_loss = plt.subplots(figsize=(10, 6))
+    ax_loss.set_xlabel('Steps')
+    ax_loss.set_ylabel('Loss')
+    ax_loss.set_title(f'Training and Validation Loss at step {step}')
+    ax_loss.grid(True, alpha=0.3)
+    ax_loss.set_xlim(0, config.training_steps + 2 * config.eval_interval)
+    ax_loss.tick_params(axis='x', labelsize=6)  # x-axis ticks
+    ax_loss.plot(steps_recorded, train_losses, color = "tab:blue", label='Training Loss', linewidth=2)
+    ax_loss.plot(steps_recorded, val_losses, color = "tab:orange", label='Validation Loss', linewidth=2)
+    ax_loss.legend(loc='upper right')
+    ax_loss.set_ylim(min(min(train_losses), min(val_losses))*0.9, max(max(train_losses), max(val_losses)) * 1.1 if train_losses else 1)
+    fig_loss.canvas.draw()
+    fig_loss.savefig(f'{REPORT_DIR}/losses.png', dpi=300, bbox_inches='tight')
+    plt.close(fig_loss)  # Close the figure to free memory
+
+    
+def pwe_plot(model: GPTModel, step: int, starting_limits: tuple = (None, None)):
+    """
+    Plot the position embeddings of the model.
+    """
+    layer_prefix = "module." if DDP_ACTIVE else ""
+    layer_prefix += "_orig_mod." if TORCH_COMPILATION else ""
+    layer_name = "wpe"
+    weights = model.state_dict()[f"{layer_prefix}{layer_name}.weight"].cpu().detach().numpy()
+
+    if starting_limits == (None, None):
+        starting_limits = (weights.min(), weights.max())
+        
+    # --- Plot 1: Heatmap of the position embeddings ---
+    fig_pwe, ax_pwe = plt.subplots(figsize=(10, 6))
+
+    values_pwe = ax_pwe.imshow(weights, vmin=starting_limits[0], vmax=starting_limits[1])
+
+    ax_pwe.set_xlabel('Position Embedding (n_embd)')
+    tick_positions = [np.arange(weights.shape[1])[0], np.arange(weights.shape[1])[len(np.arange(weights.shape[1]-1))//2], np.arange(weights.shape[1])[-1]]
+    ax_pwe.set_xticks(tick_positions)
+    #ax_pwe.set_xlim(0, weights.shape[1]-1)  # Set x-axis limits to avoid empty space
+
+    ax_pwe.set_ylabel('Sequence Position (T)')
+    tick_positions = [np.arange(weights.shape[0])[0], np.arange(weights.shape[0])[len(np.arange(weights.shape[0]))//2], np.arange(weights.shape[0])[-1]]
+    ax_pwe.set_yticks(tick_positions)
+    #ax_pwe.set_ylim(0, weights.shape[0]-1)  # Set y-axis limits to avoid empty space
+
+    ax_pwe.set_title(f'Position Embeddings Weights at step {step}')
+    
+    cbar = fig_pwe.colorbar(values_pwe, ax=ax_pwe, label='Weight Value')
+    #cbar.set_ticks(np.arange(weights.min(), weights.max(), 0.1))
+    
+    fig_pwe.savefig(f"{REPORT_DIR}/{layer_name}.png")
+    plt.close(fig_pwe)  # Close the figure to free memory
+    
+    # --- Plot 2: Histogram of values ---
+    fig_pwe_hist, ax_pwe_hist = plt.subplots(figsize=(10, 4))
+    ax_pwe_hist.hist(weights.flatten(), bins=100, color='gray', edgecolor='black')
+    ax_pwe_hist.set_title(f'Position Embedding Value Distribution at step {step}')
+    ax_pwe_hist.set_xlabel('Weight Value')
+    ax_pwe_hist.set_ylabel('Frequency')
+    ax_pwe_hist.grid(True, linestyle='--', alpha=0.6)
+
+    fig_pwe_hist.tight_layout()
+    fig_pwe_hist.savefig(f"{REPORT_DIR}/{layer_name}_hist.png")
+    plt.close(fig_pwe_hist)
+    
+    return starting_limits
+    
+def ffn_weight_plot(model: GPTModel, step: int, starting_limits: tuple):
+    """
+    Plot the FFN first-layer weights of the first transformer block.
+    """
+    layer_prefix = "module." if DDP_ACTIVE else ""
+    layer_prefix += "_orig_mod." if TORCH_COMPILATION else ""
+    layer_name = "transformer_blocks.0.mlp.c_fc"
+    weights = model.state_dict()[f"{layer_prefix}{layer_name}.weight"].cpu().detach().numpy()
+    
+    if starting_limits == (None, None):
+        starting_limits = (weights.min(), weights.max())
+    
+    # --- Plot 1: Heatmap of the FFN weights ---
+    fig_ffn, ax_ffn = plt.subplots(figsize=(10, 6))
+
+    im = ax_ffn.imshow(weights, vmin=starting_limits[0], vmax=starting_limits[1])
+
+    ax_ffn.set_xlabel('Input Features (n_embd)')
+    tick_positions = [np.arange(weights.shape[1])[0], np.arange(weights.shape[1])[len(np.arange(weights.shape[1]))//2], np.arange(weights.shape[1])[-1]]
+    ax_ffn.set_xticks(tick_positions)
+    #ax_ffn.set_xlim(0, weights.shape[1]-1)  # Set x-axis limits to avoid empty space
+    ax_ffn.set_ylabel('FFN Neurons (4*n_embd)')
+    tick_positions = [np.arange(weights.shape[0])[0], np.arange(weights.shape[0])[len(np.arange(weights.shape[0]))//2], np.arange(weights.shape[0])[-1]]
+    ax_ffn.set_yticks(tick_positions)
+    #ax_ffn.set_ylim(0, weights.shape[0]-1)  # Set y-axis limits to avoid empty space
+
+    ax_ffn.set_title(f'FFN Layer 0 Weights (Block 0) at step {step}')
+    
+    cbar = fig_ffn.colorbar(im, ax=ax_ffn, label='Weight Value')
+    #cbar.set_ticks(np.arange(weights.min(), weights.max(), 0.1))
+
+    fig_ffn.savefig(f"{REPORT_DIR}/{layer_name}.png", dpi=300, bbox_inches='tight')
+    plt.close(fig_ffn)
+    
+    # --- Plot 2: Histogram of values ---
+    fig_ffn_hist, ax_ffn_hist = plt.subplots(figsize=(10, 4))
+    ax_ffn_hist.hist(weights.flatten(), bins=100, color='gray', edgecolor='black')
+    ax_ffn_hist.set_title(f'FFN Layer 0 Weight Distribution (Block 0) at step {step}')
+    ax_ffn_hist.set_xlabel('Weight Value')
+    ax_ffn_hist.set_ylabel('Frequency')
+    ax_ffn_hist.grid(True, linestyle='--', alpha=0.6)
+
+    fig_ffn_hist.tight_layout()
+    fig_ffn_hist.savefig(f"{REPORT_DIR}/{layer_name}_hist.png")
+    plt.close(fig_ffn_hist)
+    
+    return starting_limits 
+    
+        
+def train_val_loss_csv(train_losses: list, val_losses: list, steps_recorder: list):
+    """
+    Write training and validation losses to CSV, overwriting existing content.
+    """
+    with open(f'{REPORT_DIR}/losses.csv', 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['Step', 'Train_Loss', 'Val_Loss'])  # Header row
+        
+        for step, train_loss, val_loss in zip(steps_recorder, train_losses, val_losses):
+            writer.writerow([step, float(train_loss), float(val_loss)])
+            
+starting_limits_ffn = (None, None)  # Initialize starting limits for FFN weight plot
+starting_limits_pwe = (None, None)  # Initialize starting limits for PWE weight plot
+def update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model, starting_limits_ffn, starting_limits_pwe):
+        train_losses.append(losses['train'])
+        val_losses.append(losses['val'])
+        steps_recorded.append(step)
+        train_val_loss_plot(train_losses, val_losses, steps_recorded)
+        train_val_loss_csv(train_losses, val_losses, steps_recorded)
+        starting_limits_pwe = pwe_plot(model, step, starting_limits_pwe)
+        starting_limits_ffn = ffn_weight_plot(model, step, starting_limits_ffn)
+        return starting_limits_ffn, starting_limits_pwe
+
+@torch.no_grad()
+def estimate_loss():
+    """
+    Calculates mean loss over val_loss_steps batches, for each the training and the validation splits.
+    """
+    mean_losses = {}
+    model.eval() # indicate the model is in 'evaluation' mode
+    for split in ['train', 'val']:
+        losses = torch.zeros(config.val_loss_steps)
+        for k in range(config.val_loss_steps): 
+            X,Y = train_loader.next_batch() if split == 'train' else val_loader.next_batch() # Get a batch of data
+            _, loss = model(X,Y)
+            losses[k] = loss.item()
+        mean_losses[split] = losses.mean()
+    model.train() # indicate the model is in 'training' mode
+    return mean_losses
+
+
 # =============================================================================
 # TRAINING 
 # =============================================================================
@@ -317,8 +476,8 @@ cprint("TRAINING", compute_color)
 
 
 # Initialize lists to store metrics for plotting
-train_loss_list, val_loss_list, lr_list, norm_list, duration_list, tokens_per_sec_list = [], [], [], [], [], []
-
+train_losses, val_losses, steps_recorded, final_losses = [], [], [], {}
+losses_accumulated, lrs, norms, durations, tokens_per_sec = [], [], [], [], []
 
 # Initialize optimizer
 if DDP_ACTIVE:
@@ -326,10 +485,9 @@ if DDP_ACTIVE:
 else:
     optimizer = model.configure_optimizers(config, device_type=device_type)
 
-log_file = os.path.join(REPORT_DIR, f"log.csv")
-header_row = f"Step; Train Loss Accum; Val Loss Accum ; lr;  norm ;  dt (s);  Tokens/s;\n"
+log_file = os.path.join(REPORT_DIR, f"log.txt")
 with open(log_file, "w") as f: # open for writing to clear the file
-    f.write(header_row)
+    pass
 
 start_train_loop = datetime.now()
 for step in trange(config.training_steps, desc="Training steps", unit="step", disable=False):
@@ -341,71 +499,8 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
     # -------------------------------------------------------------------------------------------------------------------------------------
     # (1) Once every eval_interval steps, evaluate the model on the validation set for val_loss_steps steps
     if step % config.eval_interval == 0 or last_step:
-        model.eval()
-        val_loader.reset()  # Reset the validation loader to the start of the validation data
-        with torch.no_grad():
-            val_loss_accum = 0.0
-            for _ in range(config.val_loss_steps):
-                xb, yb = val_loader.next_batch()
-                with torch.autocast(device_type=device_type, dtype=torch.bfloat16 if device_type == "cuda" else torch.float32) if AUTOCAST else nullcontext():
-                    _, loss = model(xb, yb)
-                    loss = loss / config.val_loss_steps
-                    val_loss_accum += loss.detach()  # Accumulate validation loss
-
-        if DDP_ACTIVE:
-            dist.all_reduce(val_loss_accum, op=dist.ReduceOp.SUM)
-            val_loss_accum /= ddp_world_size  # Average the validation loss across all DDP processes
-        
-        if master_process:
-            pass
-            # TODO Checkpoints
-            
-
-    # (2) Once every eval_interval steps generate text from the model
-    if (step % config.eval_interval == 0 or last_step) and False:
-        # Context tokens
-        context_text = "Hello, I'm a language model,"
-        context_tokens = tokenizer.encode(context_text)
-        context_tokens = torch.tensor(context_tokens, dtype=torch.long) # 1, 8
-
-        # Manually generating a batch with the same sequence context_tokens 5 times 
-        num_generated_sequences = 5
-        context_tokens = context_tokens.unsqueeze(0).repeat(num_generated_sequences, 1) # 5, 8
-        idx = context_tokens.to(device)
-        sample_rgn = torch.Generator(device=device)  # Create a random number generator for sampling, to avoid using the global random state and affect the training process
-        sample_rgn.manual_seed(seed + ddp_rank)  # Seed the random number generator with the current step for reproducibility
-        max_new_tokens = 30
-
-        # Generate from context tokens (manually instead of using model.generate() not implemented yet)
-        while idx.size(1) < max_new_tokens:
-
-            with torch.no_grad():
-                # right now idx is (B, T) where B = 5, T = 8
-
-                # forward the model
-                logits, _ = model(idx)  # (B, T, vocab_size)
-
-                # Focus on the last time step (next token prediction)
-                logits = logits[:, -1, :] # (B, vocab_size) 
-
-                # Convert to probabilities
-                probs = F.softmax(logits, dim = -1) # (B, vocab_size)
-
-                # Do top-k sampling of 50 (huggingface default pipeline)
-                # topk_probs here becomes (5,50) and topk_indices becomes (5,50)
-                topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)  # Get top 50 probabilities and indices
-                ix = torch.multinomial(topk_probs, num_samples=1, generator=sample_rgn)  # Select a token from the top 50 probabilities (B, 1)
-                xcol = torch.gather(topk_indices, -1, ix) # Gather the corresponding token indices based on the sampled probabilities
-                
-                # Append to sequence
-                idx = torch.cat((idx, xcol), dim = 1) # (B, T+1)
-
-        # print the generated sequences
-        for i in range(num_generated_sequences):
-            generated_tokens = idx[i, :max_new_tokens].tolist() # Get the generated tokens for this sequence
-            generated_text = tokenizer.decode(generated_tokens)  # Decode the tokens to text
-            cprint(f"DDP rank {ddp_rank} - Generated text {i+1}: <START> {generated_text}<END>", compute_color)
-        
+        losses = estimate_loss()
+        starting_limits_ffn, starting_limits_pwe = update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model, starting_limits_ffn, starting_limits_pwe)
     
     # TRAINING PHASE
     # ---------------------------------------------------------------------------------------------------------------------------------------
@@ -457,159 +552,104 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
     tokens_processed = train_loader.B * train_loader.T * grad_accumulation_steps * ddp_world_size # Total tokens processed in this step
     tokens_per_second = tokens_processed / dt
 
-    # LOGGING EVALUATION AND TRAINING METRICS
-    # ---------------------------------------------------------------------------------------------------------------------------------------
     if master_process:
-        csv_row = f"{step}; {train_loss_acc:.4}; {val_loss_accum:.4}; {lr:.4}; {norm:.4}; {dt:.4}; {tokens_per_second};\n"
-        #terminal_row = f"step {step}; train_loss_acc {train_loss_acc:.4}; val_loss_accum {val_loss_accum:.4}; lr {lr:.4}; norm {norm:.4}; dt {dt:.4}; tokens_per_second {tokens_per_second};\n"
-        #cprint(terminal_row, compute_color)
-
-        if step % config.eval_interval == 0 or last_step:
-            with open(log_file, "a") as f:
-                f.write(csv_row)
-
-            # Store metrics for plotting
-            train_loss_list.append(train_loss_acc.cpu().item() if train_loss_acc.is_cuda else train_loss_acc.item())  # Convert to Python float for plotting
-            val_loss_list.append(val_loss_accum.cpu().item() if val_loss_accum.is_cuda else val_loss_accum.item())
-            lr_list.append(lr)
-            norm_list.append(norm.cpu().item() if norm.is_cuda else norm.item())
-            duration_list.append(dt)
-            tokens_per_sec_list.append((tokens_per_second))
-            steps_list = np.linspace(0, step, num=len(train_loss_list), dtype=int)  # Create a list of steps for plotting
-            # Plot metrics in real-time
-            plt.figure(figsize=(20, 12))
-
-            # Loss plot
-            plt.plot(steps_list, train_loss_list, label='Train Loss')
-            plt.plot(steps_list, val_loss_list, label='Val Loss')
-            plt.xlabel('Step')
-            plt.ylabel('Loss')
-            plt.yticks(np.arange(min(train_loss_list)-1, max(train_loss_list) + 1, 1))  # Set y-ticks for better readability
-            plt.title('Loss over Steps')
-            plt.legend()
-            plt.grid(True)
-            plt.tight_layout()
-            plt.savefig(f'{REPORT_DIR}/losses.png')
-
-            # Learning rate plot
-            plt.figure(figsize=(20, 12))
-
-            plt.subplot(2, 2, 1)
-            plt.plot(steps_list, lr_list, label='Learning Rate', color='orange')
-            plt.xlabel('Step')
-            plt.ylabel('Learning Rate')
-            plt.yticks(np.arange(0, max(lr_list) + 5e-5, 5e-5))  # Set y-ticks for better readability
-            plt.title('Learning Rate over Steps')
-            plt.legend()
-            plt.grid(True)
-
-            # Gradient norm plot
-            plt.subplot(2, 2, 2)
-            plt.plot(steps_list, norm_list, label='Gradient Norm', color='green')
-            plt.xlabel('Step')
-            plt.ylabel('Norm')
-            plt.title('Gradient Norm over Steps')
-            plt.legend()
-            plt.grid(True)
-
-            # Duration plot
-            plt.subplot(2, 2, 3)
-            plt.plot(steps_list, duration_list, label='Duration', color='red')
-            plt.xlabel('Step')
-            plt.ylabel('Duration (s)')
-            plt.yticks(np.arange(0, max(duration_list) + 0.1, 0.1))  # Set y-ticks for better readability
-            plt.title('Duration per Step')
-            plt.legend()
-            plt.grid(True)
-
-            # Tokens per second plot
-            plt.subplot(2, 2, 4)
-            plt.plot(steps_list, tokens_per_sec_list, label='Tokens/sec', color='purple')
-            plt.xlabel('Step')
-            plt.ylabel('Tokens/sec')
-            plt.yticks(np.arange(0, max(tokens_per_sec_list) + 10000, 10000))  # Set y-ticks for better readability
-            plt.title('Tokens/sec over Steps')
-            plt.legend()
-            plt.grid(True)
-
-            plt.tight_layout()
-            plt.savefig(f'{REPORT_DIR}/training_metrics_summary.png')
-  
-        plt.close('all')
-
- 
-  
+        cprint(f"Step {step+1:03d} | Train Loss Accum: {train_loss_acc:.4} | lr: {lr:.4e} | norm: {norm:.4e} | dt: {dt:.4}s | Tokens/sec: {tokens_per_second}", compute_color)
+        with open(log_file, "a") as f:
+            f.write(f"{step} train {train_loss_acc.item():.6f}\n")
+        # Store metrics for plotting
+        losses_accumulated.append(train_loss_acc.cpu().item() if train_loss_acc.is_cuda else train_loss_acc.item())  # Convert to Python float for plotting
+        lrs.append(lr)
+        norms.append(norm.cpu().item() if norm.is_cuda else norm.item())
+        durations.append(dt)
+        tokens_per_sec.append((tokens_per_second))
+        
 end_train_loop = datetime.now()
+
+# Estimate loss after the last training step
+# This is to ensure the final losses are recorded even if the last step is not an evaluation 
+step = config.training_steps - 1
+losses = estimate_loss()
+
 if master_process:
     cprint(f"\nTraining completed in {end_train_loop - start_train_loop} (HH:MM:SS)", compute_color)
+    starting_limits_ffn, starting_limits_pwe = update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model, starting_limits_ffn, starting_limits_pwe)
 
-# # =============================================================================
-# # INFERENCE & TEXT GENERATION
-# # =============================================================================
-# # Context tokens
-# context_text = "\n"
-# tokenizer
-# context_tokens = tokenizer.encode(context_text)
-# context_tokens = torch.tensor(context_tokens, dtype=torch.long)
-# idx = context_tokens.to(device).unsqueeze(0)  # Shape becomes (1, seq_len)
 
-# # Generate from context tokens
-# generated_tokens = model.module.generate(idx, max_new_tokens=500)[0].tolist()
-# generated_text = tokenizer.decode(generated_tokens)
-# print("Generated text: <START>", colored(generated_text, "cyan"), "<END>")
+    final_losses = losses # Store final losses for reporting
+
+    training_summary = (
+        f"\nTraining Summary:\n"
+        f"  Final training loss: {final_losses['train']:.4f}\n"
+        f"  Final validation loss: {final_losses['val']:.4f}\n"
+    )
+    print(training_summary)
+# =============================================================================
+# INFERENCE & TEXT GENERATION
+# =============================================================================
+# Context tokens
+context_text = "\n"
+tokenizer
+context_tokens = tokenizer.encode(context_text)
+context_tokens = torch.tensor(context_tokens, dtype=torch.long)
+idx = context_tokens.to(device).unsqueeze(0)  # Shape becomes (1, seq_len)
+
+# Generate from context tokens
+generated_tokens = model.module.generate(idx, max_new_tokens=500)[0].tolist()
+generated_text = tokenizer.decode(generated_tokens)
+print("Generated text: <START>", colored(generated_text, "cyan"), "<END>")
     
 
-# # =============================================================================
-# # REPORT GENERATION
-# # =============================================================================
+# =============================================================================
+# REPORT GENERATION
+# =============================================================================
 
-# report = f"""# Training Report
+report = f"""# Training Report
 
-# **Training Session:** `{TRAIN_ID}`
+**Training Session:** `{TRAIN_ID}`
 
-# **Training Device:** `{compute_device}`
+**Training Device:** `{compute_device}`
 
-# ## 🎯 Training Result
+## 🎯 Training Result
 
-# - **Final Training Loss:** `{final_losses['train']:.4f}` | **Final Validation Loss:** `{final_losses['val']:.4f}`
-# - **Training duration:** `{end_train_loop - start_train_loop}` (HH:MM:SS)
+- **Final Training Loss:** `{final_losses['train']:.4f}` | **Final Validation Loss:** `{final_losses['val']:.4f}`
+- **Training duration:** `{end_train_loop - start_train_loop}` (HH:MM:SS)
 
-# ### 📈 Loss evolution
+### 📈 Loss evolution
 
-# <img src="losses.png" alt="Training and Validation Loss" width="60%"/>
+<img src="losses.png" alt="Training and Validation Loss" width="60%"/>
 
-# ## Generation Example:
-# ```
-# {generated_text}
-# ```
+## Generation Example:
+```
+{generated_text}
+```
 
-# ## Hyperparameters and Configuration
+## Hyperparameters and Configuration
 
-# | Hyperparameters and Architecture |                            | | | Model Dimension         |                                                  | | | Dataset Details      |                                                                         |
-# |----------------------------------|----------------------------|-|-|-------------------------|--------------------------------------------------|-|-|----------------------|-------------------------------------------------------------------------|
-# | seq_size                       | `{config.seq_size}` tokens   | | | Total Parameters        | `{total_params:,}`                               | | | Dataset              | `{DATA_PATH}`                                                           |
-# | batch_size                     | `{config.batch_size}`        | | | Trainable Parameters    | `{trainable_params:,}`                           | | | Dataset Size         | `{len(train_loader.train_tokens) + len(val_loader.val_tokens):,}` tokens  |
-# | n_embd (dim)                   | `{config.n_embd}`            | | | Model Size              | ~`{total_params * 4 / 1024**2:.2f}` MB (float32) | | | Training Tokens      | `{len(train_loader.train_tokens):,}` tokens ({config.train_val_ratio:.1%})|
-# | n_head                         | `{config.n_head}`            | | | Optimizer               | AdamW with learning rate `{config.lr}`| | | Validation Tokens    | `{len(val_loader.val_tokens):,}` tokens ({1-config.train_val_ratio:.1%})|
-# | n_layer                        | `{config.n_layer}`           | | | Tokenizer               | `{tokenizer.name}`                               | | |                      |                                                                         |
-# | dropout                        | `{config.dropout}`           | | | Vocabulary Size         | `{tokenizer.n_vocab:,}` tokens                | | |                      |                                                                         |
-# | training_steps                 | `{config.training_steps:,}`  | | |                         |                                                  | | |                      |                                                                         |
-# | lr                  | `{config.lr}`     | | |                         |                                                  | | |                      |                                                                         |
-# | eval_interval                  | `{config.eval_interval}`     | | |                         |                                                  | | |                      |                                                                         |
-# | val_loss_steps                     | `{config.val_loss_steps}`        | | |                         |                                                  | | |                      |                                                                         |
+| Hyperparameters and Architecture |                            | | | Model Dimension         |                                                  | | | Dataset Details      |                                                                         |
+|----------------------------------|----------------------------|-|-|-------------------------|--------------------------------------------------|-|-|----------------------|-------------------------------------------------------------------------|
+| seq_size                       | `{config.seq_size}` tokens   | | | Total Parameters        | `{total_params:,}`                               | | | Dataset              | `{DATA_PATH}`                                                           |
+| batch_size                     | `{config.batch_size}`        | | | Trainable Parameters    | `{trainable_params:,}`                           | | | Dataset Size         | `{len(train_loader.train_tokens) + len(val_loader.val_tokens):,}` tokens  |
+| n_embd (dim)                   | `{config.n_embd}`            | | | Model Size              | ~`{total_params * 4 / 1024**2:.2f}` MB (float32) | | | Training Tokens      | `{len(train_loader.train_tokens):,}` tokens ({config.train_val_ratio:.1%})|
+| n_head                         | `{config.n_head}`            | | | Optimizer               | AdamW with learning rate `{config.lr}`| | | Validation Tokens    | `{len(val_loader.val_tokens):,}` tokens ({1-config.train_val_ratio:.1%})|
+| n_layer                        | `{config.n_layer}`           | | | Tokenizer               | `{tokenizer.name}`                               | | |                      |                                                                         |
+| dropout                        | `{config.dropout}`           | | | Vocabulary Size         | `{tokenizer.n_vocab:,}` tokens                | | |                      |                                                                         |
+| training_steps                 | `{config.training_steps:,}`  | | |                         |                                                  | | |                      |                                                                         |
+| lr                  | `{config.lr}`     | | |                         |                                                  | | |                      |                                                                         |
+| eval_interval                  | `{config.eval_interval}`     | | |                         |                                                  | | |                      |                                                                         |
+| val_loss_steps                     | `{config.val_loss_steps}`        | | |                         |                                                  | | |                      |                                                                         |
 
 
-# """
+"""
 
-# with open(f'{REPORT_DIR}/report.md', 'w', encoding='utf-8') as f:
-#     f.write(report)
+with open(f'{REPORT_DIR}/report.md', 'w', encoding='utf-8') as f:
+    f.write(report)
     
-# # Save configuration as JSON
-# with open(f'{REPORT_DIR}/config.json', 'w', encoding='utf-8') as f:
-#     config_dict = config.model_dump()
-#     #config_dict["compute_device"] = compute_device
-#     #config_dict["selected_tokenizer"] = tokenizer.name
-#     f.write(json.dumps(config_dict, indent=2))
+# Save configuration as JSON
+with open(f'{REPORT_DIR}/config.json', 'w', encoding='utf-8') as f:
+    config_dict = config.model_dump()
+    #config_dict["compute_device"] = compute_device
+    #config_dict["selected_tokenizer"] = tokenizer.name
+    f.write(json.dumps(config_dict, indent=2))
 
 
 

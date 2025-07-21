@@ -64,7 +64,7 @@ class GPT2Config(ModelConfig):
     n_embd: int = 768 # Embedding dimension (size of the hidden states)
     dropout : float = 0  # Dropout rate for regularization (to avoid overfitting) ((not implemented for GPT2)
 
-    tokens_per_step: int = 2**19 # (II) Tokens per step. It will be used to accumulate gradients over multiple batches before updating the model weights. Use B*T to force the model to process all tokens in the batch at once.
+    tokens_per_step: int = seq_size*batch_size  #2**19 # (II) Tokens per step. It will be used to accumulate gradients over multiple batches before updating the model weights. Use B*T to force the model to process all tokens in the batch at once.
 
     # Training Parameters
     training_steps : int = 19073 # (IV) Number of training steps
