@@ -91,7 +91,8 @@ torch.set_float32_matmul_precision('high') if TENSOR_CORES else None
 
 # File paths
 TRAIN_ID = datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
-DATA_PATH = 'data/tiny_shakespeare/text/tinyshakespeare.txt'
+DATA_PATH = "data/edu_fineweb10B/shards/"
+
 
 # =============================================================================
 # HYPERPARAMETERS
@@ -112,14 +113,6 @@ cprint("DATA PREPARATION", compute_color)
 tokenizer = char_level_tokenizer if config.selected_tokenizer == char_level_tokenizer.name else tiktoken_tokenizer
 config.vocab_size = tokenizer.n_vocab  if config.vocab_size is None else config.vocab_size # Set vocabulary size based on the tokenizer if it is not provided in the config
 
-def load_tokens_from_file(filename: str) -> torch.Tensor:
-    """
-    Load tokens from a file and return them as a PyTorch tensor.
-    """
-    tokens_array = np.load(filename)
-    tokens_tensor = torch.tensor(tokens_array, dtype = torch.long)  # Convert to long tensor
-    return tokens_tensor
-
 class DataLoaderFromTokenShards:
     def __init__(self, B:int, T:int, process_rank:int=0, num_processes:int=1, split:Literal['train', 'val']='train'):
         self.B = B
@@ -129,15 +122,14 @@ class DataLoaderFromTokenShards:
         assert split in {'train','val'} 
 
         # get the shard filenames
-        data_root = "edu_fineweb10B"
-        shard_names = os.listdir(data_root) # Get all shard file names in the root
+        shard_names = os.listdir(DATA_PATH) # Get all shard file names in the root
         shard_names = [s for s in shard_names if split in s] # Check if 'test' or 'train' is in the shard file name
         shard_names = sorted(shard_names) # Sort shard names
-        shard_names = [os.path.join(data_root, s) for s in shard_names] # Create absolute path names for each shard
+        shard_names = [os.path.join(DATA_PATH, s) for s in shard_names] # Create absolute path names for each shard
         self.shard_names = shard_names
         
         assert len(shard_names) > 0, f"No shard files found for split {split}"
-        print(f"found {len(shard_names)} for split {split}")
+        cprint(f"found {len(shard_names)} for split {split}", compute_color)
 
         self.current_shard = 0 # state: start with the first shard
         self.tokens = torch.tensor(np.load(shard_names[self.current_shard]), dtype = torch.long)  # Convert to long tensor
@@ -258,16 +250,21 @@ class DataLoaderFromTxt:
 
         return xb, yb  
 
-# Macro batch: We will repeat the forward - backward grad_accumulation_steps times to simulate a larger batch size. We will call this micro-step.
-macro_batch_size = 2*config.batch_size * config.seq_size #config.macro_batch_size # 2**19  approx. 0.5M like in the paper
-total_batch_size = config.batch_size * config.seq_size  # Total batch size across all processes (DDP)
-assert macro_batch_size % (total_batch_size*ddp_world_size) == 0, "macro_batch_size must be divisible by total_batch_size * ddp_world_size"
-grad_accumulation_steps = macro_batch_size // (total_batch_size*ddp_world_size)
-
 # Create dataloader instance
 #train_loader = DataLoaderFromTxt(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size)
 train_loader = DataLoaderFromTokenShards(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split='train')
-####### TODO CONTINUE HERE ######## on 3:19:00 in the video
+
+# Macro batch: We will repeat the forward - backward grad_accumulation_steps times to simulate a larger batch size. We will call this micro-step.
+tokens_per_step = config.tokens_per_step #config.tokens_per_step # 2**19  approx. 0.5M like in the paper
+total_batch_size = config.batch_size * config.seq_size  # Total batch size across all processes (DDP)
+assert tokens_per_step % (total_batch_size*ddp_world_size) == 0, "tokens_per_step must be divisible by total_batch_size * ddp_world_size"
+grad_accumulation_steps = tokens_per_step // (total_batch_size*ddp_world_size)
+
+cprint("BATCH CALCULATIONS", compute_color)
+cprint(f"Macro batch size: {tokens_per_step} tokens", compute_color)
+cprint(f"Total batch size (B*T): {config.batch_size} * {config.seq_size} = {total_batch_size} tokens", compute_color)
+cprint(f"Grad accumulation steps (tokens_per_step // (total_batch_size*ddp_world_size)): {grad_accumulation_steps}", compute_color)
+
 # =============================================================================
 # MODEL INITIALIZATION
 # =============================================================================
@@ -296,7 +293,6 @@ model_size = total_params * 4 / 1024**2  # Size in MB (assuming float32, 4 bytes
 
 model_summary = (
     f"\nModel Details:\n"
-    f"  Architecture: GPT-style Transformer\n"
     f"  Total parameters: {total_params:,}\n"
     f"  Trainable parameters: {trainable_params:,}\n"
     f"  Model size: ~{model_size:.2f} MB (float32)\n"
@@ -328,6 +324,9 @@ def get_lr(step: int, config: ModelConfig) -> float:
     min_lr = max_lr * 0.1  # Minimum learning rate (10% of max)
     lr_warmup_steps = config.lr_warmup_steps  # Number of warmup steps
     total_steps = config.training_steps  # Total training steps
+    # If no decay and no warmup, return max_lr
+    if not config.lr_decay and lr_warmup_steps == 0:
+        return max_lr
     # (1) warmup
     if step < lr_warmup_steps:
         return max_lr * (step+1) / lr_warmup_steps  # Linear warmup
@@ -367,7 +366,7 @@ for step in range(config.training_steps):
     model.train()
     optimizer.zero_grad() # Reset gradients
 
-    # Macro/Micro Batch (New!)
+    # Macro/Micro Batch
     # We will accumulate gradients over multiple micro-steps to simulate a larger macro batch size
     loss_accumulation = 0.0
     for micro_step in range(grad_accumulation_steps):
@@ -395,7 +394,7 @@ for step in range(config.training_steps):
         # Note! dist.ReduceOp.AVG is not a primitive operation and failed with 'goo' backend, while SUM is primitive operation that does not fail. Manually dividing by ddp_world_size later gets the average loss across all processes.
         
     # Clipping gradients: stabilize training 
-    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) if config.gradient_clipping else None
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) if config.gradient_clipping else torch.tensor(0.0, device=device)  # Clip gradients to prevent exploding gradients, norm is 0 if clipping is disabled
 
     # Learning Rate Scheduler
     lr = get_lr(step, config)
