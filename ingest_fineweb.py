@@ -15,13 +15,17 @@ from datasets import load_dataset # pip install datasets
 from tqdm import tqdm # pip install tqdm
 
 # ------------------------------------------
-local_dir = "data/edu_fineweb10B/shards/"
+shards_local_dir = "data/edu_fineweb10B/shards/"
+text_local_dir = "data/edu_fineweb10B/text/"
+
 remote_name = "sample-10BT"
 shard_size = int(1e8) # 100M tokens per shard, total of 100 shards
 
 # Create the cache local directory
-DATA_CACHE_DIR = os.path.join(os.path.dirname(__file__), local_dir)
-os.makedirs(DATA_CACHE_DIR, exist_ok=True)
+SHARDS_CACHE_DIR = os.path.join(os.path.dirname(__file__), shards_local_dir)
+os.makedirs(SHARDS_CACHE_DIR, exist_ok=True)
+TEXT_CACHE_DIR = os.path.join(os.path.dirname(__file__), text_local_dir)
+os.makedirs(TEXT_CACHE_DIR, exist_ok=True)
 
 # Download dataset with HuggingFace datasets library
 fw = load_dataset("HuggingFaceFW/fineweb-edu", name=remote_name, split="train")
@@ -67,7 +71,7 @@ with mp.Pool(nprocs) as pool:
         else:
             # write the current shard and start a new one
             split = "val" if shard_index == 0 else "train"
-            filename = os.path.join(DATA_CACHE_DIR, f"edufineweb_{split}_{shard_index:06d}")
+            filename = os.path.join(SHARDS_CACHE_DIR, f"edufineweb_{split}_{shard_index:06d}")
             # split the document into whatever fits in this shard; the remainder goes to next one
             remainder = shard_size - token_count
             progress_bar.update(remainder)
@@ -82,5 +86,22 @@ with mp.Pool(nprocs) as pool:
     # write any remaining tokens as the last shard
     if token_count != 0:
         split = "val" if shard_index == 0 else "train"
-        filename = os.path.join(DATA_CACHE_DIR, f"edufineweb_{split}_{shard_index:06d}")
+        filename = os.path.join(SHARDS_CACHE_DIR, f"edufineweb_{split}_{shard_index:06d}")
         write_datafile(filename, all_tokens_np[:token_count])
+        
+
+# Sanity Check: Count the token for each saved shard
+def count_dataset():
+    dataset = []
+    # list of all shard file names
+    shard_files = [f for f in os.listdir(SHARDS_CACHE_DIR)]
+    shard_files.sort()
+    for shard_file in shard_files:
+        filename = os.path.join(SHARDS_CACHE_DIR, shard_file)
+        if os.path.exists(filename):
+            tokens_np = np.load(filename)
+            print(len(tokens_np))
+    # Optionally, sort the dataset to maintain order
+    return dataset
+
+dataset = count_dataset()

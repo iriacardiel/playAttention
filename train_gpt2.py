@@ -287,7 +287,7 @@ if TORCH_COMPILATION:
 
 # DDP Wrapper for the model
 if DDP_ACTIVE:
-    model = DDP(model, device_ids = [ddp_local_rank]) # TODO: this is not working with 1 GPU, need to investigate
+    model = DDP(model, device_ids = [ddp_local_rank]) # DDP fails here if using 1 GPU and backed = 'nccl' (it requires at least 2 GPUs), so we use 'gloo' backend for single GPU training
 
 # Count model parameters
 total_params = sum(p.numel() for p in model.parameters())
