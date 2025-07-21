@@ -41,7 +41,7 @@ class GPTConfig(ModelConfig):
     weight_decay: float = 0 # Weight decay for AdamW optimizer: default is 0.1, but set to 0 to avoid regularization in small models
     
     # Evaluation Parameters
-    eval_iters : int  = 100  # Number of batches to evaluate the loss on train and val splits
+    val_loss_steps : int  = 100  # Number of batches to evaluate the loss on train and val splits
     eval_interval : int = 100  # Number of training steps between evaluations
     train_val_ratio : float = 0.9 # Ratio of training to validation data, e.g., 0.9 means 90% training and 10% validation
             
@@ -78,7 +78,8 @@ class GPT2Config(ModelConfig):
     weight_decay: float = 0.1 # Weight decay for AdamW optimizer (default is 0.1, but set to 0 to avoid regularization in small models)
 
     # Evaluation Parameters
-    # TODO
+    val_loss_steps : int = 10  # Number of steps to evaluate the validation loss
+    eval_interval : int = 10  # Number of training steps between evaluations
 
 
 '''

@@ -94,7 +94,7 @@ Fly, Clifford, thou can
 | training_steps                 | `5,000`  | | |                         |                                                  | | |                      |                                                            |
 | lr                  | `0.0003`     | | |                         |                                                  | | |                      |                                                            |
 | eval_interval                  | `100`     | | |                         |                                                  | | |                      |                                                            |
-| eval_iters                     | `100`        | | |                         |                                                  | | |                      |                                                            |
+| val_loss_steps                     | `100`        | | |                         |                                                  | | |                      |                                                            |
 
 
     

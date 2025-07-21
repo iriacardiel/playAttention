@@ -58,6 +58,6 @@ Romfor hi
 | training_steps                 | `20,000`  | | |                         |                                                  | | |                      |                                                            |
 | lr                  | `0.001`     | | |                         |                                                  | | |                      |                                                            |
 | eval_interval                  | `100`     | | |                         |                                                  | | |                      |                                                            |
-| eval_iters                     | `100`        | | |                         |                                                  | | |                      |                                                            |
+| val_loss_steps                     | `100`        | | |                         |                                                  | | |                      |                                                            |
 
 

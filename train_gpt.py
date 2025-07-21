@@ -51,6 +51,7 @@ if DDP_ACTIVE:
         dist.init_process_group(backend='nccl')  # TODO: Test on multiple GPUs
 
     torch.cuda.set_device(device)  # Set the current device to the local rank's GPU
+
 else:
     # NON DDP mode
     cprint(f"Single process mode (not DDP)", color="yellow", attrs=["bold"])
@@ -62,6 +63,8 @@ else:
     elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
         compute_device = "mps"
     device = torch.device(compute_device)
+
+master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
 
 compute_color_map = {}
 color_list = ["cyan", "red", "orange", "green", "blue", "indigo", "violet"]
@@ -92,7 +95,7 @@ torch.set_float32_matmul_precision('high') if TENSOR_CORES else None
 # File paths
 TRAIN_ID = datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
 DATA_PATH = 'data/tiny_shakespeare/text/tinyshakespeare.txt'
-REPORT_DIR = f'reports/training_{TRAIN_ID}_{compute_device}'
+REPORT_DIR = f'logs/GPT_training_{TRAIN_ID}_{compute_device}'
 # Create plots directory
 os.makedirs(REPORT_DIR, exist_ok=True)
 # =============================================================================
@@ -101,26 +104,27 @@ os.makedirs(REPORT_DIR, exist_ok=True)
 
 config = GPTConfig(compute_device=compute_device)
 
-cprint("HYPERPARAMETERS", compute_color)
-
-cprint(config.model_dump_json(indent=2), compute_color)
+if master_process:
+    cprint("HYPERPARAMETERS", compute_color)
+    cprint(config.model_dump_json(indent=2), compute_color)
 
 # =============================================================================
 # DATA PREPARATION
 # =============================================================================
-
-cprint("DATA PREPARATION", compute_color)
+if master_process:
+    cprint("DATA PREPARATION", compute_color)
 
 tokenizer = char_level_tokenizer if config.selected_tokenizer == char_level_tokenizer.name else tiktoken_tokenizer
 config.vocab_size = tokenizer.n_vocab  if config.vocab_size is None else config.vocab_size # Set vocabulary size based on the tokenizer if it is not provided in the config
+
 class DataLoaderFromTxt:
-    def __init__(self, B, T, process_rank:int=0, num_processes:int=1, split: str = 'train'):
+    def __init__(self, B:int, T:int, process_rank:int=0, num_processes:int=1, split:Literal['train', 'val']='train'):
         self.B = B
         self.T = T
         self.process_rank = process_rank
         self.num_processes = num_processes
         self.split = split  # Store split type
-        assert split in {'train','val'} # NOT IMPLEMENTED
+        assert split in {'train','val'}
 
         # At init load tokens from disk and store them in memory
         try:
@@ -131,18 +135,15 @@ class DataLoaderFromTxt:
         
         tokens = tokenizer.encode(text)  # Encode the text into tokens
         self.tokens = torch.tensor(tokens, dtype=torch.long)
-        cprint(f"loaded {len(self.tokens)} tokens", compute_color)
-        cprint(f"1 epoch = {len(self.tokens)// (self.B*self.T)} batches", compute_color)
-
-        self.vocab_size = tokenizer.n_vocab
-        self.current_position = self.process_rank * self.B * self.T  # state: initialize current position based on process rank to ensure each process gets a unique subset of the data
-
         # Split the data into training and validation sets
         split_idx = int(config.train_val_ratio * len(self.tokens)) 
         self.train_tokens = self.tokens[:split_idx] # train split 
         self.val_tokens = self.tokens[split_idx:] # validation split
         
-        data_preparation_summary = (
+        if master_process:
+            cprint(f"loaded {len(self.tokens)} tokens", compute_color)
+            cprint(f"1 epoch = {len(self.tokens)// (self.B*self.T)} batches", compute_color)
+            data_preparation_summary = (
             f"\nTokenziation summary:\n"
             f"  Tokenizer: {tokenizer.name}\n"
             f"  Tokenized text: {len(self.tokens):,} tokens\n"
@@ -150,9 +151,18 @@ class DataLoaderFromTxt:
             f"\nData split:\n"
             f"  Training:   {len(self.train_tokens):,} tokens ({len(self.train_tokens)/len(self.tokens)*100:.1f}%)\n"
             f"  Validation: {len(self.val_tokens):,} tokens ({len(self.val_tokens)/len(self.tokens)*100:.1f}%)\n"
-        )
+            )
         
-        cprint(data_preparation_summary, compute_color)
+            cprint(data_preparation_summary, compute_color)
+
+        self.reset()
+        self.vocab_size = tokenizer.n_vocab
+            
+    def reset(self):
+        """
+        Reset the data loader to the initial state.
+        """
+        self.current_position = self.process_rank * self.B * self.T  # state: initialize current position based on process rank to ensure each process gets a unique subset of the data
     
     # Batch generator
     def next_batch(self) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -186,7 +196,7 @@ class DataLoaderFromTxt:
         # v2
         #Ensure current_position does not exceed data length
         if self.current_position >= len(data):
-            self.current_position = self.process_rank * B * T
+            self.reset()
 
         buf = data[self.current_position: self.current_position + B * T + 1]
 
@@ -200,12 +210,12 @@ class DataLoaderFromTxt:
 
         # If we reach the end of the tokens, reset to the beginning
         if self.current_position + (B * T * self.num_processes + 1) > len(data):
-            self.current_position = self.process_rank * B * T
+            self.reset()
 
         # Move to compute device (GPU or CPU)
         xb, yb = xb.to(device), yb.to(device)
 
-        return xb, yb  
+        return xb, yb
 
 # Create dataloader instance
 train_loader = DataLoaderFromTxt(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split = 'train')
@@ -217,16 +227,17 @@ total_batch_size = config.batch_size * config.seq_size  # Total batch size acros
 assert tokens_per_step % (total_batch_size*ddp_world_size) == 0, "tokens_per_step must be divisible by total_batch_size * ddp_world_size"
 grad_accumulation_steps = tokens_per_step // (total_batch_size*ddp_world_size)
 
-cprint("BATCH CALCULATIONS", compute_color)
-cprint(f"Macro batch size: {tokens_per_step} tokens", compute_color)
-cprint(f"Total batch size (B*T): {config.batch_size} * {config.seq_size} = {total_batch_size} tokens", compute_color)
-cprint(f"Grad accumulation steps (tokens_per_step // (total_batch_size*ddp_world_size)): {grad_accumulation_steps}", compute_color)
+if master_process:
+    cprint("\nBATCH CALCULATIONS", compute_color)
+    cprint(f"Macro batch size: {tokens_per_step} tokens", compute_color)
+    cprint(f"Total batch size (B*T): {config.batch_size} * {config.seq_size} = {total_batch_size} tokens", compute_color)
+    cprint(f"Grad accumulation steps (tokens_per_step // (total_batch_size*ddp_world_size)): {grad_accumulation_steps}", compute_color)
 
 # =============================================================================
 # MODEL INITIALIZATION
 # =============================================================================
-
-cprint("MODEL INITIALIZATION", compute_color)
+if master_process:
+    cprint("\nMODEL INITIALIZATION", compute_color)
 
 
 # Create model instance
@@ -243,19 +254,20 @@ if TORCH_COMPILATION:
 if DDP_ACTIVE:
     model = DDP(model, device_ids = [ddp_local_rank]) # DDP fails here if using 1 GPU and backed = 'nccl' (it requires at least 2 GPUs), so we use 'gloo' backend for single GPU training
 
-# Count model parameters
-total_params = sum(p.numel() for p in model.parameters())
-trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-model_size = total_params * 4 / 1024**2  # Size in MB (assuming float32, 4 bytes per parameter)
 
-model_summary = (
-    f"\nModel Details:\n"
-    f"  Total parameters: {total_params:,}\n"
-    f"  Trainable parameters: {trainable_params:,}\n"
-    f"  Model size: ~{model_size:.2f} MB (float32)\n"
-)
+if master_process:
+    # Count model parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    model_size = total_params * 4 / 1024**2  # Size in MB (assuming float32, 4 bytes per parameter)
+    model_summary = (
+        f"\nModel Details:\n"
+        f"  Total parameters: {total_params:,}\n"
+        f"  Trainable parameters: {trainable_params:,}\n"
+        f"  Model size: ~{model_size:.2f} MB (float32)\n"
+    )
 
-cprint(model_summary, compute_color)
+    cprint(model_summary, compute_color)
 
 
 # Print model architecture
@@ -296,7 +308,7 @@ def get_lr(step: int, config: ModelConfig) -> float:
     # (3) after training
     else: 
         return min_lr
-    
+
 def train_val_loss_plot(train_losses: list, val_losses: list, steps_recorded: list):
     step = steps_recorded[-1] if steps_recorded else 0  # Get the last recorded step
     
@@ -441,13 +453,13 @@ def update_visualizations(step, train_losses, val_losses, losses, steps_recorded
 @torch.no_grad()
 def estimate_loss():
     """
-    Calculates mean loss over eval_iters batches, for each the training and the validation splits.
+    Calculates mean loss over val_loss_steps batches, for each the training and the validation splits.
     """
     mean_losses = {}
     model.eval() # indicate the model is in 'evaluation' mode
     for split in ['train', 'val']:
-        losses = torch.zeros(config.eval_iters)
-        for k in range(config.eval_iters): 
+        losses = torch.zeros(config.val_loss_steps)
+        for k in range(config.val_loss_steps): 
             X,Y = train_loader.next_batch() if split == 'train' else val_loader.next_batch() # Get a batch of data
             _, loss = model(X,Y)
             losses[k] = loss.item()
@@ -473,21 +485,30 @@ if DDP_ACTIVE:
 else:
     optimizer = model.configure_optimizers(config, device_type=device_type)
 
+log_file = os.path.join(REPORT_DIR, f"log.txt")
+with open(log_file, "w") as f: # open for writing to clear the file
+    pass
+
 start_train_loop = datetime.now()
 for step in trange(config.training_steps, desc="Training steps", unit="step", disable=False):
+    last_step = (step == config.training_steps - 1)
+    t0 = time.time()
+
+
     # EVALUATION PHASE
-    if step % config.eval_interval == 0: # Every eval_interval steps pause training and evaluate the mean loss on train and val sets on eval_iters batches
+    # -------------------------------------------------------------------------------------------------------------------------------------
+    # (1) Once every eval_interval steps, evaluate the model on the validation set for val_loss_steps steps
+    if step % config.eval_interval == 0 or last_step:
         losses = estimate_loss()
         starting_limits_ffn, starting_limits_pwe = update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model, starting_limits_ffn, starting_limits_pwe)
     
     # TRAINING PHASE
-    t0 = time.time()
+    # ---------------------------------------------------------------------------------------------------------------------------------------
     model.train()
     optimizer.zero_grad() # Reset gradients
 
-    # Macro/Micro Batch
-    # We will accumulate gradients over multiple micro-steps to simulate a larger macro batch size
-    loss_accumulation = 0.0
+    # Macro/Micro Batch: Accumulate gradients over multiple micro-steps to simulate a larger macro batch size
+    train_loss_acc = 0.0
     for micro_step in range(grad_accumulation_steps):
         
         # Sample a batch random of training data
@@ -501,15 +522,15 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
             logits, loss = model(xb, yb)
         
         loss = loss / grad_accumulation_steps # Scale the loss by the number of micro-steps to average it out
-        loss_accumulation += loss.detach()  # Accumulate loss over micro-steps
+        train_loss_acc += loss.detach()  # Accumulate loss over micro-steps
         
         # Backward pass
         loss.backward()
 
     if DDP_ACTIVE:
 
-        dist.all_reduce(loss_accumulation, op=dist.ReduceOp.SUM)  # Aggregate loss across all processes in DDP
-        loss_accumulation /= ddp_world_size  # Average the loss across all DDP processes
+        dist.all_reduce(train_loss_acc, op=dist.ReduceOp.SUM)  # Aggregate loss across all processes in DDP
+        train_loss_acc /= ddp_world_size  # Average the loss across all DDP processes
         # Note! dist.ReduceOp.AVG is not a primitive operation and failed with 'goo' backend, while SUM is primitive operation that does not fail. Manually dividing by ddp_world_size later gets the average loss across all processes.
         
     # Clipping gradients: stabilize training 
@@ -531,35 +552,37 @@ for step in trange(config.training_steps, desc="Training steps", unit="step", di
     tokens_processed = train_loader.B * train_loader.T * grad_accumulation_steps * ddp_world_size # Total tokens processed in this step
     tokens_per_second = tokens_processed / dt
 
-    # Store metrics for plotting
-    losses_accumulated.append(loss_accumulation.cpu().item() if loss_accumulation.is_cuda else loss_accumulation.item())  # Convert to Python float for plotting
-    lrs.append(lr)
-    norms.append(norm.cpu().item() if norm.is_cuda else norm.item())
-    durations.append(dt)
-    tokens_per_sec.append((tokens_per_second))
-
-    cprint(f"Step {step+1:03d} | Loss accum: {loss_accumulation:.4} | lr: {lr:.4e} | norm: {norm:.4e} | dt: {dt:.4}s | Tokens/sec: {tokens_per_second}", compute_color)
-
+    if master_process:
+        cprint(f"Step {step+1:03d} | Train Loss Accum: {train_loss_acc:.4} | lr: {lr:.4e} | norm: {norm:.4e} | dt: {dt:.4}s | Tokens/sec: {tokens_per_second}", compute_color)
+        with open(log_file, "a") as f:
+            f.write(f"{step} train {train_loss_acc.item():.6f}\n")
+        # Store metrics for plotting
+        losses_accumulated.append(train_loss_acc.cpu().item() if train_loss_acc.is_cuda else train_loss_acc.item())  # Convert to Python float for plotting
+        lrs.append(lr)
+        norms.append(norm.cpu().item() if norm.is_cuda else norm.item())
+        durations.append(dt)
+        tokens_per_sec.append((tokens_per_second))
+        
 end_train_loop = datetime.now()
-cprint(f"\nTraining completed in {end_train_loop - start_train_loop} (HH:MM:SS)", compute_color)
-
 
 # Estimate loss after the last training step
 # This is to ensure the final losses are recorded even if the last step is not an evaluation 
 step = config.training_steps - 1
 losses = estimate_loss()
-starting_limits_ffn, starting_limits_pwe = update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model, starting_limits_ffn, starting_limits_pwe)
+
+if master_process:
+    cprint(f"\nTraining completed in {end_train_loop - start_train_loop} (HH:MM:SS)", compute_color)
+    starting_limits_ffn, starting_limits_pwe = update_visualizations(step, train_losses, val_losses, losses, steps_recorded, model, starting_limits_ffn, starting_limits_pwe)
 
 
-final_losses = losses # Store final losses for reporting
+    final_losses = losses # Store final losses for reporting
 
-training_summary = (
-    f"\nTraining Summary:\n"
-    f"  Final training loss: {final_losses['train']:.4f}\n"
-    f"  Final validation loss: {final_losses['val']:.4f}\n"
-)
-print(training_summary)
-
+    training_summary = (
+        f"\nTraining Summary:\n"
+        f"  Final training loss: {final_losses['train']:.4f}\n"
+        f"  Final validation loss: {final_losses['val']:.4f}\n"
+    )
+    print(training_summary)
 # =============================================================================
 # INFERENCE & TEXT GENERATION
 # =============================================================================
@@ -613,7 +636,7 @@ report = f"""# Training Report
 | training_steps                 | `{config.training_steps:,}`  | | |                         |                                                  | | |                      |                                                                         |
 | lr                  | `{config.lr}`     | | |                         |                                                  | | |                      |                                                                         |
 | eval_interval                  | `{config.eval_interval}`     | | |                         |                                                  | | |                      |                                                                         |
-| eval_iters                     | `{config.eval_iters}`        | | |                         |                                                  | | |                      |                                                                         |
+| val_loss_steps                     | `{config.val_loss_steps}`        | | |                         |                                                  | | |                      |                                                                         |
 
 
 """
@@ -631,3 +654,4 @@ with open(f'{REPORT_DIR}/config.json', 'w', encoding='utf-8') as f:
 
 
 
+dist.destroy_process_group() if DDP_ACTIVE else None  # Clean up DDP resources

@@ -1,13 +1,13 @@
 # Training Report
 
-**Training Session:** `20250716_0934`
+**Training Session:** `20250715_1716`
 
-**Training Device:** `cuda`
+**Training Device:** `cpu`
 
 ## 🎯 Training Result
 
-- **Final Training Loss:** `1.8263` | **Final Validation Loss:** `1.9694`
-- **Training duration:** `0:08:48.160538`
+- **Final Training Loss:** `1.8241` | **Final Validation Loss:** `1.9698`
+- **Training duration:** `0:09:45.432614`
 
 ### 📈 Loss evolution
 
@@ -17,15 +17,33 @@
 ```
 
 
-Clave for your fach is now the diser bube to take O'd my calitans bard that us crohonty ceethancate away, my feans a will must owns, toffice come milend;
-Whate misters, I in latient drove to deed me now on trabous like die; litth he cocking: turn aise hew you:' make nor
-To tell dest my luwod mother
-To Wilso what evices to them, rive cenchieves poor of his guous and thrupt for tream. Wake me, I have ofterful Prevery Somether-buck!
+GLOYY BLUIS:
+Beggain fiendly dogress have me is'erd.
+Pasting a.
 
-GREY:
-Had addab the Eartune:
-Go cour accanny Rull soon
-To follow
+Tomaces the rese:
+The wouse.
+
+Thio, soment the kings. I am retrace a their rant Edwards,
+The Lord,
+Who patward I someet,
+Mos woe, known, of mock you rackles, thou
+come evily.
+
+BRUTUTOLYCUS:
+Even thou have hearh: thou edance the!
+
+AUTOLYCUS:
+I cutionate of these sucked the
+Have that a trast her, to gifatious sig your brand nick, too shall?
+
+KING Lets lifed wince;
+I mut true in.
+
+DUCKtience.
+
+AMILLO:
+I'lt dream fatuouty livent new n
 ```
 
 ## Hyperparameters and Configuration
@@ -41,7 +59,7 @@ To follow
 | training_steps                 | `20,000`  | | |                         |                                                  | | |                      |                                                            |
 | lr                  | `0.001`     | | |                         |                                                  | | |                      |                                                            |
 | eval_interval                  | `100`     | | |                         |                                                  | | |                      |                                                            |
-| eval_iters                     | `100`        | | |                         |                                                  | | |                      |                                                            |
+| val_loss_steps                     | `100`        | | |                         |                                                  | | |                      |                                                            |
 
 
     

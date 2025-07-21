@@ -1,7 +1,7 @@
 {
   "compute_device": "cuda",
-  "tokenizer": "TiktokenGPT2",
-  "vocab_size": 50257,
+  "tokenizer": "CharTokenizer",
+  "vocab_size": 65,
   "seq_size": 256,
   "batch_size": 64,
   "n_embd": 384,
@@ -10,7 +10,7 @@
   "dropout": 0.2,
   "training_steps": 5000,
   "lr": 0.0003,
-  "eval_iters": 100,
+  "val_loss_steps": 100,
   "eval_interval": 100,
   "train_val_ratio": 0.9
 }
