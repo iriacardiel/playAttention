@@ -4,6 +4,7 @@ Training Script
 """
 
 from contextlib import nullcontext
+import inspect
 import math
 import os
 import csv
@@ -184,7 +185,9 @@ class DataLoaderFromTxt:
                 - Predict 7 given [23, 30, 31]
                 - etc.
                 
-        This implementation supports DDP training by ensuring that each process gets a unique subset of the data based on its rank.
+        This implementation supports:
+        - Supports DDP training by ensuring that each process gets a unique subset of the data based on its rank.
+        
         """
         B, T = self.B, self.T
         data = self.train_tokens if self.split == 'train' else self.val_tokens  # Use train or validation tokens based on split
@@ -219,8 +222,7 @@ class DataLoaderFromTxt:
 
 # Create dataloader instance
 train_loader = DataLoaderFromTxt(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split = 'train')
-val_loader_logs = DataLoaderFromTxt(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split = 'val')
-train_loader_logs = DataLoaderFromTxt(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split = 'train')
+val_loader = DataLoaderFromTxt(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split = 'val')
 
 # Macro batch: We will repeat the forward - backward grad_accumulation_steps times to simulate a larger batch size. We will call this micro-step.
 tokens_per_step = config.tokens_per_step #config.tokens_per_step # 2**19  approx. 0.5M like in the paper
@@ -310,6 +312,33 @@ def get_lr(step: int, config: ModelConfig) -> float:
     else: 
         return min_lr
 
+# New! Configure optimizers
+def configure_optimizers(model:torch.nn.Module, config: ModelConfig, device_type:str) -> torch.optim.Optimizer:
+    """
+    Configure optimizers for the model:
+    - AdamW optimizer with weight decay for regularization
+    - Fused version if available for better performance on CUDA
+    - Set betas, epsilon and learning rate according to the config
+    """
+    param_dict = {pn: p for pn, p in model.named_parameters()} # Make dictionary of parameter names and tensors
+    param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad} # Filter out parameters that do not require gradients
+    
+    # create optimization groups. Any parameters that is 2D will be weight decayed, otherwise no.
+    # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
+    decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+    nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+    params_to_optimize = [
+        {'params': decay_params, 'weight_decay': config.weight_decay},
+        {'params': nodecay_params, 'weight_decay': 0.0}
+    ]
+    
+    # Create AdamW optimizer and use the fused version if it is available
+    fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
+    use_fused = fused_available and device_type == "cuda"
+    #print(f"using fused AdamW: {use_fused}")
+    optimizer = torch.optim.AdamW(params_to_optimize, lr=config.lr, betas=(config.beta1, config.beta2), eps=config.eps, fused=use_fused)
+
+    return optimizer
 # =============================================================================
 # TRAINING 
 # =============================================================================
@@ -322,14 +351,13 @@ train_loss_list, val_loss_list, lr_list, norm_list, duration_list, tokens_per_se
 
 # Initialize optimizer
 if DDP_ACTIVE:
-    optimizer = model.module.configure_optimizers(config, device_type=device_type)
+    optimizer = configure_optimizers(model.module, config, device_type)
 else:
-    optimizer = model.configure_optimizers(config, device_type=device_type)
+    optimizer = configure_optimizers(model, config, device_type)
 
 log_file = os.path.join(REPORT_DIR, f"log.csv")
-header_row = f"Step; Train Loss Accum; Val Loss Accum ; lr;  norm ;  dt (s);  Tokens/s;\n"
 with open(log_file, "w") as f: # open for writing to clear the file
-    f.write(header_row)
+    f.write(f"Step; Train Loss Accum; Val Loss Accum ; lr;  norm ;  dt (s);  Tokens/s;\n")
 
 start_train_loop = datetime.now()
 pbar = trange(config.training_steps, desc="Training steps", unit="step", disable=not master_process, colour=compute_color)
@@ -338,66 +366,57 @@ for step in pbar:
     t0 = time.time()
 
     # EVALUATION PHASE
-    # -------------------------------------------------------------------------------------------------------------------------------------
-    # (1) Once every eval_interval steps, evaluate the model on the validation set for eval_loss_steps steps
+    # ---------------------------------------------------------------------------------------------------------------------------------------
     if step % config.eval_interval == 0 or last_step:
+        
+        # (1) Evaluate the model on the validation set for eval_loss_steps steps
         model.eval()
-        val_loader_logs.reset()  # Reset the validation loader to the start of the validation data
-        train_loader_logs.reset()  # Reset the training loader to the start of the training data
+        val_loader.reset()  # Reset the validation loader to the start of the validation data
         with torch.no_grad():
-            val_loss_log = 0.0
-            train_loss_log = 0.0
+            val_loss_acc = 0.0
             for _ in range(config.eval_loss_steps):
-                xb_val, yb_val = val_loader_logs.next_batch()
+                xb_val, yb_val = val_loader.next_batch()
                 with torch.autocast(device_type=device_type, dtype=torch.bfloat16 if device_type == "cuda" else torch.float32) if AUTOCAST else nullcontext():
                     _, val_loss = model(xb_val, yb_val)
                     val_loss = val_loss / config.eval_loss_steps
-                    val_loss_log += val_loss.detach()  # Accumulate validation loss
+                    val_loss_acc += val_loss.detach()  # Accumulate validation loss
 
-                xb_train, yb_train = train_loader_logs.next_batch()
-                with torch.autocast(device_type=device_type, dtype=torch.bfloat16 if device_type == "cuda" else torch.float32) if AUTOCAST else nullcontext():
-                    _, train_loss = model(xb_train, yb_train)
-                    train_loss = train_loss / config.eval_loss_steps
-                    train_loss_log += train_loss.detach()  # Accumulate training loss
 
         if DDP_ACTIVE:
-            dist.all_reduce(val_loss_log, op=dist.ReduceOp.SUM)
-            val_loss_log /= ddp_world_size  # Average the validation loss across all DDP processes
-            dist.all_reduce(train_loss_log, op=dist.ReduceOp.SUM)
-            train_loss_log /= ddp_world_size  # Average the training loss across all DDP processes
-
+            dist.all_reduce(val_loss_acc, op=dist.ReduceOp.SUM)
+            val_loss_acc /= ddp_world_size  # Average the validation loss across all DDP processes
         if master_process:
             pass
             # TODO Checkpoints
             
 
-    # (2) Once every eval_interval steps generate text from the model
-    if (step % config.eval_interval == 0 or last_step) and False:
-        # Context tokens
-        context_text = "Hello, I'm a language model,"
-        context_tokens = tokenizer.encode(context_text)
-        context_tokens = torch.tensor(context_tokens, dtype=torch.long) # 1, 8
+        # (2) Generate text from the model
+        if False:
+            # Context tokens
+            context_text = "Hello, I'm a language model,"
+            context_tokens = tokenizer.encode(context_text)
+            context_tokens = torch.tensor(context_tokens, dtype=torch.long) # 1, 8
 
-        # Manually generating a batch with the same sequence context_tokens 5 times 
-        num_generated_sequences = 5
-        max_new_tokens = 30
+            # Manually generating a batch with the same sequence context_tokens 5 times 
+            num_generated_sequences = 5
+            max_new_tokens = 30
 
-        context_tokens = context_tokens.unsqueeze(0).repeat(num_generated_sequences, 1) # 5, 8
-        idx = context_tokens.to(device)
+            context_tokens = context_tokens.unsqueeze(0).repeat(num_generated_sequences, 1) # 5, 8
+            idx = context_tokens.to(device)
 
-        # Generate from context tokens
-        if DDP_ACTIVE:
-            generated_tokens = model.module.generate(idx, max_new_tokens, ddp_rank, device)
-        else:
-            model.eval()
-            generated_tokens = model.generate(idx, max_new_tokens, ddp_rank, device)
+            # Generate from context tokens
+            if DDP_ACTIVE:
+                generated_tokens = model.module.generate(idx, max_new_tokens, ddp_rank, device)
+            else:
+                model.eval()
+                generated_tokens = model.generate(idx, max_new_tokens, ddp_rank, device)
 
-        # print the generated sequences
-        for i in range(num_generated_sequences):
-            generated_tokens = idx[i, :max_new_tokens].tolist() # Get the generated tokens for this sequence
-            generated_text = tokenizer.decode(generated_tokens)  # Decode the tokens to text
-            cprint(f"DDP rank {ddp_rank} - Generated text {i+1}: <START> {generated_text}<END>", compute_color)
-        
+            # print the generated sequences
+            for i in range(num_generated_sequences):
+                generated_tokens = idx[i, :max_new_tokens].tolist() # Get the generated tokens for this sequence
+                generated_text = tokenizer.decode(generated_tokens)  # Decode the tokens to text
+                cprint(f"DDP rank {ddp_rank} - Generated text {i+1}: <START> {generated_text}<END>", compute_color)
+
     
     # TRAINING PHASE
     # ---------------------------------------------------------------------------------------------------------------------------------------
@@ -452,93 +471,94 @@ for step in pbar:
     # LOGGING EVALUATION AND TRAINING METRICS
     # ---------------------------------------------------------------------------------------------------------------------------------------
     if master_process:
-        csv_row = f"{step}; {train_loss_log:.4}; {val_loss_log:.4}; {lr:.4}; {norm:.4}; {dt:.4}; {tokens_per_second};\n"
-        #terminal_row = f"step {step}; train_loss_log {train_loss_log:.4}; val_loss_log {val_loss_log:.4}; lr {lr:.4}; norm {norm:.4}; dt {dt:.4}; tokens_per_second {tokens_per_second};\n"
-        #cprint(terminal_row, compute_color)
+        csv_row = f"{step}; {train_loss_acc:.4}; {val_loss_acc:.4}; {lr:.4}; {norm:.4}; {dt:.4}; {tokens_per_second};\n"
 
         if step % config.eval_interval == 0 or last_step:
             with open(log_file, "a") as f:
                 f.write(csv_row)
-
+            
             # Store metrics for plotting
-            train_loss_list.append(train_loss_log.cpu().item() if train_loss_log.is_cuda else train_loss_log.item())  # Convert to Python float for plotting
-            val_loss_list.append(val_loss_log.cpu().item() if val_loss_log.is_cuda else val_loss_log.item())
+            train_loss_list.append(train_loss_acc.cpu().item() if train_loss_acc.is_cuda else train_loss_acc.item())  # Convert to Python float for plotting
+            val_loss_list.append(val_loss_acc.cpu().item() if val_loss_acc.is_cuda else val_loss_acc.item())
             lr_list.append(lr)
             norm_list.append(norm.cpu().item() if norm.is_cuda else norm.item())
             duration_list.append(dt)
             tokens_per_sec_list.append((tokens_per_second))
-            steps_list = np.linspace(0, step, num=len(train_loss_list), dtype=int)  # Create a list of steps for plotting
+            
+            # Create a list of steps for plotting
+            steps_list = np.linspace(0, step, num=len(train_loss_list), dtype=int) 
             
             # Plot metrics in real-time
+            if step != 0:
+                
+                # Loss plot
+                plt.figure(figsize=(10, 6))
+                plt.plot(steps_list, train_loss_list, label=f'Train Loss (last={train_loss_list[-1]:.4f})')
+                plt.plot(steps_list, val_loss_list, label=f'Val Loss (last={val_loss_list[-1]:.4f})')
+                plt.xlabel('Step')
+                plt.ylabel('Loss')
+                plt.yticks(np.arange(round(min(train_loss_list),1)-1, round(max(train_loss_list),1)+ 1, 0.2))  # Set y-ticks for better readability
+                plt.xlim(0, config.training_steps +1)  # Set x-axis limit to training steps
+                plt.xticks(np.arange(0,config.training_steps + 1, config.training_steps // 10))  # Set x-ticks for better readability
+                plt.title('Loss over Steps')
+                plt.legend()
+                plt.grid(True)
+                plt.tight_layout()
+                plt.savefig(f'{REPORT_DIR}/losses.png')
 
-            # Loss plot
-            plt.figure(figsize=(10, 6))
-            plt.plot(steps_list, train_loss_list, label='Train Loss')
-            plt.plot(steps_list, val_loss_list, label='Val Loss')
-            plt.xlabel('Step')
-            plt.ylabel('Loss')
-            plt.yticks(np.arange(round(min(train_loss_list),1)-1, round(max(train_loss_list),1)+ 1, 0.2))  # Set y-ticks for better readability
-            plt.xlim(0, config.training_steps +1)  # Set x-axis limit to training steps
-            plt.xticks(np.arange(0,config.training_steps + 1, config.training_steps // 10))  # Set x-ticks for better readability
-            plt.title('Loss over Steps')
-            plt.legend()
-            plt.grid(True)
-            plt.tight_layout()
-            plt.savefig(f'{REPORT_DIR}/losses.png')
+                # Learning rate plot
+                plt.figure(figsize=(20, 12))
 
-            # Learning rate plot
-            plt.figure(figsize=(20, 12))
+                plt.subplot(2, 2, 1)
+                plt.plot(steps_list, lr_list, label='Learning Rate', color='orange')
+                plt.xlabel('Step')
+                plt.ylabel('Learning Rate')
+                plt.yticks(np.arange(0, max(lr_list) + 5e-5, 5e-5))  # Set y-ticks for better readability
+                plt.xlim(0, config.training_steps +1)  # Set x-axis limit to training steps
+                plt.xticks(np.arange(0,config.training_steps + 1, config.training_steps // 10))  # Set x-ticks for better readability
+                plt.title('Learning Rate over Steps')
+                plt.legend()
+                plt.grid(True)
 
-            plt.subplot(2, 2, 1)
-            plt.plot(steps_list, lr_list, label='Learning Rate', color='orange')
-            plt.xlabel('Step')
-            plt.ylabel('Learning Rate')
-            plt.yticks(np.arange(0, max(lr_list) + 5e-5, 5e-5))  # Set y-ticks for better readability
-            plt.xlim(0, config.training_steps +1)  # Set x-axis limit to training steps
-            plt.xticks(np.arange(0,config.training_steps + 1, config.training_steps // 10))  # Set x-ticks for better readability
-            plt.title('Learning Rate over Steps')
-            plt.legend()
-            plt.grid(True)
+                # Gradient norm plot
+                plt.subplot(2, 2, 2)
+                plt.plot(steps_list, norm_list, label='Gradient Norm', color='green')
+                plt.xlabel('Step')
+                plt.ylabel('Norm')
+                plt.xlim(0, config.training_steps +1)  # Set x-axis limit to training steps
+                plt.xticks(np.arange(0,config.training_steps + 1, config.training_steps // 10))  # Set x-ticks for better readability
+                plt.title('Gradient Norm over Steps')
+                plt.legend()
+                plt.grid(True)
 
-            # Gradient norm plot
-            plt.subplot(2, 2, 2)
-            plt.plot(steps_list, norm_list, label='Gradient Norm', color='green')
-            plt.xlabel('Step')
-            plt.ylabel('Norm')
-            plt.xlim(0, config.training_steps +1)  # Set x-axis limit to training steps
-            plt.xticks(np.arange(0,config.training_steps + 1, config.training_steps // 10))  # Set x-ticks for better readability
-            plt.title('Gradient Norm over Steps')
-            plt.legend()
-            plt.grid(True)
+                # Duration plot
+                plt.subplot(2, 2, 3)
+                plt.plot(steps_list, duration_list, label=f'Duration (mean={np.mean(duration_list[1:]):.4f})', color='red')
+                plt.xlabel('Step')
+                plt.ylabel('Duration (s)')
+                plt.yticks(np.arange(0, round(max(duration_list[1:]),1) + 0.2, 0.2))  # Set y-ticks for better readability
+                plt.xlim(0, config.training_steps +1)  # Set x-axis limit to training steps
+                plt.xticks(np.arange(0,config.training_steps + 1, config.training_steps // 10))  # Set x-ticks for better readability
+                plt.title('Duration per Step')
+                plt.legend()
+                plt.grid(True)
 
-            # Duration plot
-            plt.subplot(2, 2, 3)
-            plt.plot(steps_list, duration_list, label='Duration', color='red')
-            plt.xlabel('Step')
-            plt.ylabel('Duration (s)')
-            plt.yticks(np.arange(0, max(duration_list) + 0.1, 0.1))  # Set y-ticks for better readability
-            plt.xlim(0, config.training_steps +1)  # Set x-axis limit to training steps
-            plt.xticks(np.arange(0,config.training_steps + 1, config.training_steps // 10))  # Set x-ticks for better readability
-            plt.title('Duration per Step')
-            plt.legend()
-            plt.grid(True)
+                # Tokens per second plot
+                plt.subplot(2, 2, 4)
+                plt.plot(steps_list, tokens_per_sec_list, label='Tokens/sec', color='purple')
+                plt.xlabel('Step')
+                plt.ylabel('Tokens/sec')
+                plt.yticks(np.arange(0, max(tokens_per_sec_list) + 1000, 500))  # Set y-ticks for better readability
+                plt.xlim(0, config.training_steps +1)  # Set x-axis limit to training steps
+                plt.xticks(np.arange(0,config.training_steps + 1, config.training_steps // 10))  # Set x-ticks for better readability
+                plt.title('Tokens/sec over Steps')
+                plt.legend()
+                plt.grid(True)
 
-            # Tokens per second plot
-            plt.subplot(2, 2, 4)
-            plt.plot(steps_list, tokens_per_sec_list, label='Tokens/sec', color='purple')
-            plt.xlabel('Step')
-            plt.ylabel('Tokens/sec')
-            plt.yticks(np.arange(0, max(tokens_per_sec_list) + 1000, 500))  # Set y-ticks for better readability
-            plt.xlim(0, config.training_steps +1)  # Set x-axis limit to training steps
-            plt.xticks(np.arange(0,config.training_steps + 1, config.training_steps // 10))  # Set x-ticks for better readability
-            plt.title('Tokens/sec over Steps')
-            plt.legend()
-            plt.grid(True)
-
-            plt.tight_layout()
-            plt.savefig(f'{REPORT_DIR}/training_metrics_summary.png')
-  
-        plt.close('all')
+                plt.tight_layout()
+                plt.savefig(f'{REPORT_DIR}/training_metrics_summary.png')
+    
+            plt.close('all')
         pbar.postfix = f"train_loss_acc {train_loss_acc}"  # Update the progress bar postfix with the current step
 
 
@@ -548,11 +568,11 @@ end_train_loop = datetime.now()
 if master_process:
     model.eval()
     cprint(f"\nTraining completed in {end_train_loop - start_train_loop} (HH:MM:SS)", compute_color)
+    cprint(f"Final training loss: {train_loss_acc:.4f}, Final validation loss: {val_loss_acc:.4f}", compute_color)
+    
     # Save configuration as JSON
     with open(f'{REPORT_DIR}/config.json', 'w', encoding='utf-8') as f:
         config_dict = config.model_dump()
-        #config_dict["compute_device"] = compute_device
-        #config_dict["selected_tokenizer"] = tokenizer.name
         f.write(json.dumps(config_dict, indent=2))
         
         # =============================================================================
