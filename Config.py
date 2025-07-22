@@ -20,10 +20,10 @@ class GPTConfig(ModelConfig):
     
     # Model Architecture Parameters
     seq_size : int = 8 # Number of tokens in the input sequence. Maximum context length for the predictions
-    batch_size : int = 32 # Number of sequences in a batch to be processed in parallel
+    batch_size : int = 32 # Number of sequences in a batch to be processed in parallel 16, 32, 64, etc.
     n_embd : int = 32 # Embedding dimension (size of the hidden states)
     n_head : int = 4 # Number of attention heads
-    #flash_attention: bool = False # Use flash attention if available (not implemented for GPT1)
+    flash_attention: bool = False # Use flash attention if available (NOT IMPLEMENTED FOR GPT)
     n_layer : int = 3 # Number of transformer blocks
     dropout : float = 0  # Dropout rate for regularization (to avoid overfitting)
 
@@ -31,14 +31,14 @@ class GPTConfig(ModelConfig):
 
     # Training Parameters
     training_steps : int = 20000 # Number of training steps
-    lr : float = 1e-3 # Lower if the model is bigger, higher if the model is smaller. 
+    lr : float = 1e-3 # Lower if the model is bigger
     lr_warmup_steps: int = 0 # Number of warmup steps for the learning rate scheduler  
-    lr_decay: bool = False # Whether to decay the learning rate during training
-    gradient_clipping: bool = False # Whether to clip gradients to stabilize training and avoid exploding gradients
+    lr_decay: bool = False # To decay the learning rate during training
+    gradient_clipping: bool = False # To clip gradients to stabilize training and avoid exploding gradients
     beta1: float = 0.9 # Beta1 for AdamW optimizer (default is 0.9)
     beta2: float = 0.999 # Beta2 for AdamW optimizer (default is 0.999)
     eps: float  = 1e-8 # Epsilon for AdamW optimizer (default is 1e-8)
-    weight_decay: float = 0 # Weight decay for AdamW optimizer: default is 0.1, but set to 0 to avoid regularization in small models
+    weight_decay: float = 0  # Weight decay for AdamW optimizer (default is 0.1, but set to 0 to avoid regularization in small models)
     
     # Evaluation Parameters
     eval_loss_steps : int  = 100  # Number of batches to evaluate the loss on train and val splits
@@ -49,11 +49,12 @@ class GPTConfig(ModelConfig):
 class GPT2Config(ModelConfig):
 
     # Compute Device
-    compute_device: Optional[str] # 'cpu' or 'cuda'
+    compute_device: Optional[str] = None # 'cpu' or 'cuda'
         
     # Tokenizer
     selected_tokenizer: str = "TiktokenGPT2" # Choose tokenizer: "CharTokenizer" or "TiktokenGPT2"
-    vocab_size: int = 50304 # (I) 
+    vocab_size: int = 50304 # (I) Number of tokens in the vocabulary: (50000 BPE Merges + 256 Bytes tokens + 1 EOS token) for GPT-2,  256 or 65 for char-level tokenizer, etc.
+    
 
     # Model Architecture Parameters
     seq_size: int = 1024 # Number of tokens in the input sequence. Maximum context length for the predictions
@@ -62,16 +63,16 @@ class GPT2Config(ModelConfig):
     flash_attention: bool = True # Use flash attention if available
     n_layer: int = 12 # Number of transformer blocks
     n_embd: int = 768 # Embedding dimension (size of the hidden states)
-    dropout : float = 0  # Dropout rate for regularization (to avoid overfitting) ((not implemented for GPT2)
+    dropout : float = 0  # Dropout rate for regularization (to avoid overfitting) (NOT IMPLEMENTED FOR GPT2)
 
     tokens_per_step: int = seq_size*batch_size  #2**19 # (II) Tokens per step. It will be used to accumulate gradients over multiple batches before updating the model weights. Use B*T to force the model to process all tokens in the batch at once.
 
     # Training Parameters
     training_steps : int = 19073 # (IV) Number of training steps
-    lr : float = 6e-4 # Lower if the model is bigger, higher if the model is smaller. 
+    lr : float = 6e-4 # Lower if the model is bigger
     lr_warmup_steps: int = 715 # (V) Number of warmup steps for the learning rate scheduler
-    lr_decay: bool = True # Whether to decay the learning rate during training
-    gradient_clipping: bool = True # Whether to clip gradients to stabilize training and avoid exploding gradients
+    lr_decay: bool = True # To decay the learning rate during training
+    gradient_clipping: bool = True # To clip gradients to stabilize training and avoid exploding gradients
     beta1: float = 0.9 # Beta1 for AdamW optimizer (default is 0.9)
     beta2: float = 0.95 # Beta2 for AdamW optimizer (default is 0.999)
     eps: float  = 1e-8 # Epsilon for AdamW optimizer (default is 1e-8)
