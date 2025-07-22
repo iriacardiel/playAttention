@@ -343,7 +343,7 @@ class GPTModel(nn.Module):
 
         return optimizer
     
-    def generate(self, idx: torch.Tensor, max_new_tokens: int) -> torch.Tensor:
+    def generate(self, idx: torch.Tensor, max_new_tokens: int, ddp_rank: int, device: torch.device) -> torch.Tensor:
         """
         Generate new tokens autoregressively in all the batch dimensions
         (BxT) --> BxT+1, BxT+2, BxT+3, ...., BxT+max_new_tokens
@@ -364,23 +364,29 @@ class GPTModel(nn.Module):
         Returns:
             Generated sequence, shape (batch_size, current_length + max_new_tokens)
         """
-        for _ in range(max_new_tokens):
-            # Crop input sequence to maximum context length
-            idx_cropped = idx[:, -self.config.seq_size:] # (B, T) 
-            
-            # Get predictions
-            logits, _ = self(idx_cropped) # (B, T, vocab_size)
-            
-            # Focus on the last time step (next token prediction)
-            logits = logits[:, -1, :] # (B, vocab_size) 
+        sample_rgn = torch.Generator(device=device)  # Create a random number generator for sampling, to avoid using the global random state and affect the training process
+        sample_rgn.manual_seed(42 + ddp_rank)  # Seed the random number generator with the current step for reproducibility
+        with torch.no_grad():  # Disable gradient calculation for inference
+            for _ in range(max_new_tokens):
+                # Crop input sequence to maximum context length
+                idx_cropped = idx[:, -self.config.seq_size:] # (B, T) 
+                
+                # Get predictions
+                logits, _ = self(idx_cropped) # (B, T, vocab_size)
+                
+                # Focus on the last time step (next token prediction)
+                logits = logits[:, -1, :] # (B, vocab_size) 
 
-            # Convert to probabilities
-            probs = F.softmax(logits, dim = 1) # (B, vocab_size)
+                # Convert to probabilities
+                probs = F.softmax(logits, dim = 1) # (B, vocab_size)
 
-            # Sample next token
-            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
-            
-            # Append to sequence
-            idx = torch.cat((idx, idx_next), dim = 1) # (B, T+1)
-            
-        return idx
+                # Sample next token
+                topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)  # Get top 50 probabilities and indices
+                ix = torch.multinomial(topk_probs, num_samples=1, generator=sample_rgn)  # Select a token from the top 50 probabilities (B, 1)
+                idx_next = torch.gather(topk_indices, -1, ix) # Gather the corresponding token indices based on the sampled probabilities
+
+                
+                # Append to sequence
+                idx = torch.cat((idx, idx_next), dim = 1) # (B, T+1)
+                
+            return idx
