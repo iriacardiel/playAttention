@@ -363,35 +363,17 @@ for step in pbar:
 
         # Manually generating a batch with the same sequence context_tokens 5 times 
         num_generated_sequences = 5
-        context_tokens = context_tokens.unsqueeze(0).repeat(num_generated_sequences, 1) # 5, 8
-        idx = context_tokens.to(device)
-        sample_rgn = torch.Generator(device=device)  # Create a random number generator for sampling, to avoid using the global random state and affect the training process
-        sample_rgn.manual_seed(seed + ddp_rank)  # Seed the random number generator with the current step for reproducibility
         max_new_tokens = 30
 
-        # Generate from context tokens (manually instead of using model.generate() not implemented yet)
-        while idx.size(1) < max_new_tokens:
+        context_tokens = context_tokens.unsqueeze(0).repeat(num_generated_sequences, 1) # 5, 8
+        idx = context_tokens.to(device)
 
-            with torch.no_grad():
-                # right now idx is (B, T) where B = 5, T = 8
-
-                # forward the model
-                logits, _ = model(idx)  # (B, T, vocab_size)
-
-                # Focus on the last time step (next token prediction)
-                logits = logits[:, -1, :] # (B, vocab_size) 
-
-                # Convert to probabilities
-                probs = F.softmax(logits, dim = -1) # (B, vocab_size)
-
-                # Do top-k sampling of 50 (huggingface default pipeline)
-                # topk_probs here becomes (5,50) and topk_indices becomes (5,50)
-                topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)  # Get top 50 probabilities and indices
-                ix = torch.multinomial(topk_probs, num_samples=1, generator=sample_rgn)  # Select a token from the top 50 probabilities (B, 1)
-                xcol = torch.gather(topk_indices, -1, ix) # Gather the corresponding token indices based on the sampled probabilities
-                
-                # Append to sequence
-                idx = torch.cat((idx, xcol), dim = 1) # (B, T+1)
+        # Generate from context tokens
+        if DDP_ACTIVE:
+            generated_tokens = model.module.generate(idx, max_new_tokens, ddp_rank, device)
+        else:
+            model.eval()
+            generated_tokens = model.generate(idx, max_new_tokens, ddp_rank, device)
 
         # print the generated sequences
         for i in range(num_generated_sequences):
@@ -469,15 +451,18 @@ for step in pbar:
             duration_list.append(dt)
             tokens_per_sec_list.append((tokens_per_second))
             steps_list = np.linspace(0, step, num=len(train_loss_list), dtype=int)  # Create a list of steps for plotting
+            
             # Plot metrics in real-time
-            plt.figure(figsize=(20, 12))
 
             # Loss plot
+            plt.figure(figsize=(10, 6))
             plt.plot(steps_list, train_loss_list, label='Train Loss')
             plt.plot(steps_list, val_loss_list, label='Val Loss')
             plt.xlabel('Step')
             plt.ylabel('Loss')
-            plt.yticks(np.arange(min(train_loss_list)-1, max(train_loss_list) + 1, 1))  # Set y-ticks for better readability
+            plt.yticks(np.arange(round(min(train_loss_list),1)-1, round(max(train_loss_list),1)+ 1, 0.2))  # Set y-ticks for better readability
+            plt.xlim(0, config.training_steps +1)  # Set x-axis limit to training steps
+            plt.xticks(np.arange(0,config.training_steps + 1, config.training_steps // 10))  # Set x-ticks for better readability
             plt.title('Loss over Steps')
             plt.legend()
             plt.grid(True)
@@ -492,6 +477,8 @@ for step in pbar:
             plt.xlabel('Step')
             plt.ylabel('Learning Rate')
             plt.yticks(np.arange(0, max(lr_list) + 5e-5, 5e-5))  # Set y-ticks for better readability
+            plt.xlim(0, config.training_steps +1)  # Set x-axis limit to training steps
+            plt.xticks(np.arange(0,config.training_steps + 1, config.training_steps // 10))  # Set x-ticks for better readability
             plt.title('Learning Rate over Steps')
             plt.legend()
             plt.grid(True)
@@ -501,6 +488,8 @@ for step in pbar:
             plt.plot(steps_list, norm_list, label='Gradient Norm', color='green')
             plt.xlabel('Step')
             plt.ylabel('Norm')
+            plt.xlim(0, config.training_steps +1)  # Set x-axis limit to training steps
+            plt.xticks(np.arange(0,config.training_steps + 1, config.training_steps // 10))  # Set x-ticks for better readability
             plt.title('Gradient Norm over Steps')
             plt.legend()
             plt.grid(True)
@@ -511,6 +500,8 @@ for step in pbar:
             plt.xlabel('Step')
             plt.ylabel('Duration (s)')
             plt.yticks(np.arange(0, max(duration_list) + 0.1, 0.1))  # Set y-ticks for better readability
+            plt.xlim(0, config.training_steps +1)  # Set x-axis limit to training steps
+            plt.xticks(np.arange(0,config.training_steps + 1, config.training_steps // 10))  # Set x-ticks for better readability
             plt.title('Duration per Step')
             plt.legend()
             plt.grid(True)
@@ -520,7 +511,9 @@ for step in pbar:
             plt.plot(steps_list, tokens_per_sec_list, label='Tokens/sec', color='purple')
             plt.xlabel('Step')
             plt.ylabel('Tokens/sec')
-            plt.yticks(np.arange(0, max(tokens_per_sec_list) + 10000, 10000))  # Set y-ticks for better readability
+            plt.yticks(np.arange(0, max(tokens_per_sec_list) + 1000, 500))  # Set y-ticks for better readability
+            plt.xlim(0, config.training_steps +1)  # Set x-axis limit to training steps
+            plt.xticks(np.arange(0,config.training_steps + 1, config.training_steps // 10))  # Set x-ticks for better readability
             plt.title('Tokens/sec over Steps')
             plt.legend()
             plt.grid(True)
@@ -536,6 +529,7 @@ for step in pbar:
   
 end_train_loop = datetime.now()
 if master_process:
+    model.eval()
     cprint(f"\nTraining completed in {end_train_loop - start_train_loop} (HH:MM:SS)", compute_color)
     # Save configuration as JSON
     with open(f'{REPORT_DIR}/config.json', 'w', encoding='utf-8') as f:
@@ -543,7 +537,23 @@ if master_process:
         #config_dict["compute_device"] = compute_device
         #config_dict["selected_tokenizer"] = tokenizer.name
         f.write(json.dumps(config_dict, indent=2))
+        
+        # =============================================================================
+        # INFERENCE & TEXT GENERATION
+        # =============================================================================
+        # Context tokens
+        context_text = "\n"
+        context_tokens = tokenizer.encode(context_text)
+        context_tokens = torch.tensor(context_tokens, dtype=torch.long)
+        idx = context_tokens.to(device).unsqueeze(0)  # Shape becomes (1, seq_len)
 
-
+        # Generate from context tokens
+        if DDP_ACTIVE:
+            generated_tokens = model.module.generate(idx, max_new_tokens=500, ddp_rank=ddp_rank, device=device)[0].tolist()
+        else:
+            model.eval()
+            generated_tokens = model.generate(idx, max_new_tokens=500)[0].tolist()
+        generated_text = tokenizer.decode(generated_tokens)
+        print("Generated text: <START>", colored(generated_text, compute_color), "<END>")
 
 dist.destroy_process_group() if DDP_ACTIVE else None  # Clean up DDP resources
