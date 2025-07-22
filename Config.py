@@ -14,23 +14,31 @@ class GPTConfig(ModelConfig):
     # Compute Device
     compute_device: Optional[str] = None # 'cpu' or 'cuda'
     
-    # Tokenizer
+    # Dataset and Tokenizer
     selected_tokenizer: str = "CharTokenizer" # Choose tokenizer: "CharTokenizer" or "TiktokenGPT2"
     vocab_size: Optional[int] = None # Number of tokens in the vocabulary: (50000 BPE Merges + 256 Bytes tokens + 1 EOS token) for GPT-2, or 256 for char-level tokenizer, etc.
-    
+    train_val_ratio : float = 0.9 # Ratio of training to validation data, e.g., 0.9 means 90% training and 10% validation
+    dataset_tokens : int = 1115394 # Number of tokens in the tinyshakespeare dataset. It will be used to calculate training steps.
+    dataset_training_tokens : int = int(dataset_tokens * train_val_ratio) # Number of training tokens in the tinyshakespeare dataset
+    dataset_validation_tokens : int = int(dataset_tokens - dataset_training_tokens) # Number of validation tokens in the tinyshakespeare dataset
+
     # Model Architecture Parameters
-    seq_size : int = 8 # Number of tokens in the input sequence. Maximum context length for the predictions
-    batch_size : int = 32 # Number of sequences in a batch to be processed in parallel 16, 32, 64, etc.
+    seq_size : int = 16 # Number of tokens in the input sequence. Maximum context length for the predictions
+    batch_size : int = 64 # Number of sequences in a batch to be processed in parallel 16, 32, 64, etc.
     n_embd : int = 32 # Embedding dimension (size of the hidden states)
-    n_head : int = 4 # Number of attention heads
+    n_head : int = 8 # Number of attention heads
     flash_attention: bool = False # Use flash attention if available (NOT IMPLEMENTED FOR GPT)
-    n_layer : int = 3 # Number of transformer blocks
+    n_layer : int = 4 # Number of transformer blocks
     dropout : float = 0  # Dropout rate for regularization (to avoid overfitting)
 
-    tokens_per_step: int = seq_size*batch_size # Tokens per step. It will be used to accumulate gradients over multiple batches before updating the model weights. Use B*T to force the model to process all tokens in the batch at once.
-
     # Training Parameters
-    training_steps : int = 20000 # Number of training steps
+
+    n_epochs: int = 5 # Number of epochs (times the model sees all the training data) to train the model. It will be used to calculate tokens_per_step. TOUCH THIS FIRST
+    grad_accum : int = 1 # Gradient accumulation steps. It allows to accumulate gradients over multiple batches before updating the model weights. Use 1 to force the model to process all tokens in the batch at once.
+    
+    tokens_per_step: int = int(seq_size * batch_size * grad_accum) # Tokens per step. It will be used to calculate the training steps.
+    training_steps : int = int(dataset_training_tokens* n_epochs / tokens_per_step) # Number of training steps
+    
     lr : float = 1e-3 # Lower if the model is bigger
     lr_warmup_steps: int = 0 # Number of warmup steps for the learning rate scheduler  
     lr_decay: bool = False # To decay the learning rate during training
@@ -41,9 +49,14 @@ class GPTConfig(ModelConfig):
     weight_decay: float = 0  # Weight decay for AdamW optimizer (default is 0.1, but set to 0 to avoid regularization in small models)
     
     # Evaluation Parameters
-    eval_loss_steps : int  = 100  # Number of batches to evaluate the loss on train and val splits
-    eval_interval : int = 100  # Number of training steps between evaluations
-    train_val_ratio : float = 0.9 # Ratio of training to validation data, e.g., 0.9 means 90% training and 10% validation
+    eval_loss_steps : int  = 100 #int(dataset_validation_tokens / (seq_size*batch_size) ) # Number of batches to evaluate the loss on train and val splits
+    eval_interval : int = 100 #int(dataset_validation_tokens / (seq_size*batch_size)) # Number of training steps between evaluations
+    
+    # To be filled after the model is created
+    total_params: Optional[int] = None # Total number of parameters in the model, to be calculated after the model is created
+    trainable_params: Optional[int] = None # Number of trainable parameters in the model, to be calculated after the model is created
+    non_trainable_params: Optional[int] = None # Number of non-trainable parameters in the model, to be calculated after the model is created
+    model_size: Optional[str] = None # Size of the model, to be calculated after the model is created (e.g., "small", "medium", "large", etc.)
             
             
 class GPT2Config(ModelConfig):
@@ -51,24 +64,29 @@ class GPT2Config(ModelConfig):
     # Compute Device
     compute_device: Optional[str] = None # 'cpu' or 'cuda'
         
-    # Tokenizer
+    # Dataset and Tokenizer
     selected_tokenizer: str = "TiktokenGPT2" # Choose tokenizer: "CharTokenizer" or "TiktokenGPT2"
     vocab_size: int = 50304 # (I) Number of tokens in the vocabulary: (50000 BPE Merges + 256 Bytes tokens + 1 EOS token) for GPT-2,  256 or 65 for char-level tokenizer, etc.
-    
+    dataset_training_tokens : int = int(10e9) # Number of approx. training tokens in the fineweb dataset (exact number is 9853989344)
+    dataset_validation_tokens : int = int(1e8) # Number of validation tokens in the fineweb dataset
 
     # Model Architecture Parameters
     seq_size: int = 1024 # Number of tokens in the input sequence. Maximum context length for the predictions
-    batch_size : int = 8 # Number of sequences in a batch to be processed in parallel 16, 32, 64, etc.
+    batch_size : int = 32 # Number of sequences in a batch to be processed in parallel 16, 32, 64, etc. 64 is too much for ITB GPU, 32 is ok
     n_head: int = 12 # Number of attention heads
     flash_attention: bool = True # Use flash attention if available
     n_layer: int = 12 # Number of transformer blocks
     n_embd: int = 768 # Embedding dimension (size of the hidden states)
     dropout : float = 0  # Dropout rate for regularization (to avoid overfitting) (NOT IMPLEMENTED FOR GPT2)
-
-    tokens_per_step: int = seq_size*batch_size  #2**19 # (II) Tokens per step. It will be used to accumulate gradients over multiple batches before updating the model weights. Use B*T to force the model to process all tokens in the batch at once.
-
+    
     # Training Parameters
-    training_steps : int = 19073 # (IV) Number of training steps
+    
+    n_epochs: int = 0.05 # Should be 1 Number of epochs (times the model sees all the training data) to train the model. It will be used to calculate tokens_per_step. TOUCH THIS FIRST
+    grad_accum : int = 1 # should be 64 Gradient accumulation steps. It allows to accumulate gradients over multiple batches before updating the model weights. Use 1 to force the model to process all tokens in the batch at once.
+    
+    tokens_per_step: int = int(seq_size * batch_size * grad_accum) # Tokens per step. It will be used to calculate the training steps. (2**19 = 524288 ~ 0.5M TOKENS PER STEP for GPT2 on fineweb dataset)
+    training_steps : int = int(dataset_training_tokens* n_epochs / tokens_per_step) # Number of training steps (19073 for GPT2 on fineweb dataset)
+    
     lr : float = 6e-4 # Lower if the model is bigger
     lr_warmup_steps: int = 715 # (V) Number of warmup steps for the learning rate scheduler
     lr_decay: bool = True # To decay the learning rate during training
@@ -79,8 +97,14 @@ class GPT2Config(ModelConfig):
     weight_decay: float = 0.1 # Weight decay for AdamW optimizer (default is 0.1, but set to 0 to avoid regularization in small models)
 
     # Evaluation Parameters
-    eval_loss_steps : int = 10  # Number of steps to evaluate the validation loss
-    eval_interval : int = 10  # Number of training steps between evaluations
+    eval_loss_steps : int  = 100 # int(dataset_validation_tokens / (seq_size*batch_size) ) # Number of batches to evaluate the loss on train and val splits
+    eval_interval : int = 100 # int(dataset_validation_tokens / (seq_size*batch_size)) # Number of training steps between evaluations
+    
+    # To be filled after the model is created
+    total_params: Optional[int] = None # Total number of parameters in the model, to be calculated after the model is created
+    trainable_params: Optional[int] = None # Number of trainable parameters in the model, to be calculated after the model is created
+    non_trainable_params: Optional[int] = None # Number of non-trainable parameters in the model, to be calculated after the model is created
+    model_size: Optional[str] = None # Size of the model, to be calculated after the model is created (e.g., "small", "medium", "large", etc.)
 
 
 '''
