@@ -77,6 +77,7 @@ compute_color_map["mps"] = "dark_grey"
 compute_color = compute_color_map.get(compute_device, "white")  # Default to white if not found
 device_type = "cuda" if compute_device.startswith("cuda") else compute_device
 cprint(f"DDP active = {DDP_ACTIVE}. Device: {compute_device} of type {device_type}: ddp_rank = {ddp_rank}, ddp_local_rank = {ddp_local_rank}, ddp_world_size = {ddp_world_size}", compute_color)
+dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float32' # 'float16', 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
 
 # Reproducibility settings
 # -----------------------
@@ -92,6 +93,8 @@ TORCH_COMPILATION = False  # Set to True to enable PyTorch 2.0's compile feature
 AUTOCAST = False  # Mixed precision training https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html
 
 torch.set_float32_matmul_precision('high') if TENSOR_CORES else None
+ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
+ctx = nullcontext() if device_type == 'cpu' or AUTOCAST == False else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
 # File paths
 TRAIN_ID = datetime.datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
@@ -344,6 +347,9 @@ train_steps_list, train_steps_avg_list, val_steps_avg_list = [], [], []
 # Initialize dict at the top of your script
 gradient_l2_log = {"wte":[], "wpe":[], "lm_head": []}
 
+# initialize a GradScaler. If enabled=False scaler is a no-op
+scaler = torch.cuda.amp.GradScaler('cuda', enabled=(device_type == 'cuda' and AUTOCAST and dtype == 'float16'))
+
 # Initialize optimizer
 if DDP_ACTIVE:
     optimizer = configure_optimizers(model.module, config, device_type)
@@ -353,7 +359,7 @@ else:
 generated_samples_log = os.path.join(REPORT_DIR, "generated_samples.txt")
 log_file = os.path.join(REPORT_DIR, f"log.csv")
 with open(log_file, "w") as f: # open for writing to clear the file
-    f.write(f"Step; Train Loss; Train Loss Avg; Val Loss Avg ; lr;  norm ;  dt (s);  Tokens/s;\n")
+    f.write(f"Step;Train Loss;Train Loss Avg;Val Loss Avg;lr;norm;dt (s);Tokens/s\n")
 
 start_train_loop = time.time()
 pbar = trange(config.training_steps, desc="Training steps", unit="step", disable=not master_process, colour=compute_color)
@@ -374,7 +380,7 @@ for step in pbar:
             for _ in range(config.eval_loss_steps):
                 xb_val, yb_val = val_loader_avg.next_batch()
                 xb_train, yb_train = train_loader_avg.next_batch()
-                with torch.autocast(device_type=device_type, dtype=torch.bfloat16 if device_type == "cuda" else torch.float32) if AUTOCAST else nullcontext():
+                with ctx:
                     _, val_loss = model(xb_val, yb_val)
                     val_loss = val_loss / config.eval_loss_steps
                     val_loss_avg += val_loss.detach()  # Accumulate validation loss
@@ -450,14 +456,14 @@ for step in pbar:
             model.require_backward_grad_sync = (micro_step == grad_acc_microsteps - 1)  # Only sync gradients on the last micro-step
         
         # Forward pass
-        with (torch.autocast(device_type=device_type, dtype=torch.bfloat16 if device_type == "cuda" else torch.float32) if AUTOCAST else nullcontext()):
+        with ctx:
             logits, loss = model(xb, yb)
         
         loss = loss / grad_acc_microsteps # Scale the loss by the number of micro-steps to average it out
         train_loss_acc += loss.detach()  # Accumulate loss over micro-steps
         
-        # Backward pass
-        loss.backward()
+        # Backward pass, with gradient scaling if training in fp16
+        scaler.scale(loss).backward()
 
     if DDP_ACTIVE:
 
@@ -466,8 +472,12 @@ for step in pbar:
         # Note! dist.ReduceOp.AVG is not a primitive operation and failed with 'goo' backend, while SUM is primitive operation that does not fail. Manually dividing by ddp_world_size later gets the average loss across all processes.
         
     # Clipping gradients: stabilize training 
-    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1) if config.gradient_clipping else torch.tensor(0.0, device=device)  # Clip gradients to prevent exploding gradients, norm is 0 if clipping is disabled
-
+    if config.gradient_clipping:
+        scaler.unscale_(optimizer)
+        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1)
+    else:
+        norm = torch.tensor(0.0, device=device)
+        
     # Log gradient L2 norms 
     for name, param in model.named_parameters():
         if param.grad is None:
@@ -483,8 +493,9 @@ for step in pbar:
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-    # Update weights
-    optimizer.step() 
+    # Update weights and scaler
+    scaler.step(optimizer)
+    scaler.update()
     
     
     torch.cuda.synchronize() if device_type == "cuda" else None  # Synchronize for accurate timing
@@ -509,7 +520,7 @@ for step in pbar:
             val_str = f"{val_loss_avg:.4}" if step % config.eval_interval == 0 or last_step else "NA"
             train_str = f"{train_loss_avg:.4}" if step % config.eval_interval == 0 or last_step else "NA"
 
-            f.write(f"{step}; {train_loss_acc:.4}; {train_str}; {val_str}; {lr:.4}; {norm:.4}; {dt:.4}; {tokens_per_second};\n")
+            f.write(f"{step};{train_loss_acc:.4};{train_str};{val_str};{lr:.4};{norm:.4};{dt:.4};{tokens_per_second}\n")
 
         if step % config.eval_interval == 0 or last_step:
             
