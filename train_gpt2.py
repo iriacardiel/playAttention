@@ -105,7 +105,6 @@ os.makedirs(REPORT_DIR, exist_ok=True)
 
 config = GPT2Config(compute_device=compute_device)
 
-
 # =============================================================================
 # DATA PREPARATION
 # =============================================================================
@@ -236,7 +235,6 @@ if TORCH_COMPILATION:
 if DDP_ACTIVE:
     model = DDP(model, device_ids = [ddp_local_rank]) # DDP fails here if using 1 GPU and backed = 'nccl' (it requires at least 2 GPUs), so we use 'gloo' backend for single GPU training
 
-
 if master_process:
     # Count model parameters
     config.total_params = sum(p.numel() for p in model.parameters())
@@ -324,6 +322,8 @@ cprint("TRAINING", compute_color)
 # Initialize lists to store metrics for plotting
 train_loss_list, train_loss_avg_list, val_loss_avg_list, lr_list, norm_list, duration_list, tokens_per_sec_list = [], [], [], [], [], [], []
 train_steps_list, train_steps_avg_list, val_steps_avg_list = [], [], []
+# Initialize dict at the top of your script
+gradient_l2_log = {"wte":[], "wpe":[], "lm_head": []}
 
 # Initialize optimizer
 if DDP_ACTIVE:
@@ -334,7 +334,7 @@ else:
 generated_samples_log = os.path.join(REPORT_DIR, "generated_samples.txt")
 log_file = os.path.join(REPORT_DIR, f"log.csv")
 with open(log_file, "w") as f: # open for writing to clear the file
-    f.write(f"Step; Train Loss; Train Loss Avg; Val Loss Avg ; lr;  norm ;  dt (s);  Tokens/s;\n")
+    f.write(f"Step;Train Loss;Train Loss Avg;Val Loss Avg;lr;norm;dt (s);Tokens/s\n")
 
 start_train_loop = time.time()
 pbar = trange(config.training_steps, desc="Training steps", unit="step", disable=not master_process, colour=compute_color)
@@ -447,8 +447,18 @@ for step in pbar:
         # Note! dist.ReduceOp.AVG is not a primitive operation and failed with 'goo' backend, while SUM is primitive operation that does not fail. Manually dividing by ddp_world_size later gets the average loss across all processes.
         
     # Clipping gradients: stabilize training 
-    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) if config.gradient_clipping else torch.tensor(0.0, device=device)  # Clip gradients to prevent exploding gradients, norm is 0 if clipping is disabled
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1) if config.gradient_clipping else torch.tensor(0.0, device=device)  # Clip gradients to prevent exploding gradients, norm is 0 if clipping is disabled
 
+    # Log gradient L2 norms 
+    for name, param in model.named_parameters():
+        if param.grad is None:
+            continue  # Skip parameters without gradients
+        
+        grad_norm = param.grad.data.norm(2).item()
+        for substr in gradient_l2_log.keys():
+            if substr in name.lower():
+                gradient_l2_log[substr].append(grad_norm)
+   
     # Learning Rate Scheduler
     lr = get_lr(step, config)
     for param_group in optimizer.param_groups:
@@ -480,8 +490,8 @@ for step in pbar:
             val_str = f"{val_loss_avg:.4}" if step % config.eval_interval == 0 or last_step else "NA"
             train_str = f"{train_loss_avg:.4}" if step % config.eval_interval == 0 or last_step else "NA"
 
-            f.write(f"{step}; {train_loss_acc:.4}; {train_str}; {val_str}; {lr:.4}; {norm:.4}; {dt:.4}; {tokens_per_second};\n")
-        
+            f.write(f"{step};{train_loss_acc:.4};{train_str};{val_str};{lr:.4};{norm:.4};{dt:.4};{tokens_per_second}\n")
+
         if step % config.eval_interval == 0 or last_step:
             
             # Plot metrics in real-time
@@ -502,6 +512,21 @@ for step in pbar:
                 plt.grid(True)
                 plt.tight_layout()
                 plt.savefig(f'{REPORT_DIR}/losses.png')
+                
+                # Gradient L2 plot
+                plt.figure(figsize=(10, 6))
+                for substr in gradient_l2_log.keys():
+                    if len(gradient_l2_log[substr]) > 0:  # Check if there are any gradients logged for this substring
+                        plt.plot(train_steps_list, gradient_l2_log[substr], label=f'{substr} Grad L2 Norm', alpha=0.5)
+                plt.xlabel('Step')
+                plt.ylabel('Gradient L2 Norm')
+                plt.xlim(0, config.training_steps +1)  # Set x-axis limit to training steps
+                plt.xticks(np.arange(0,config.training_steps + 1, config.training_steps // 10))  # Set x-ticks for better readability
+                plt.title('Gradient L2 Norm over Steps')
+                plt.legend()
+                plt.grid(True)
+                plt.tight_layout()
+                plt.savefig(f'{REPORT_DIR}/gradient_l2_norms.png')
 
                 # Learning rate plot
                 plt.figure(figsize=(20, 12))
