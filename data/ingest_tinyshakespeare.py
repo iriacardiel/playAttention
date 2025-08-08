@@ -14,8 +14,8 @@ from custom_tokenizers import tiktoken_tokenizer, char_level_tokenizer
 from tqdm import tqdm # pip install tqdm
 
 # ------------------------------------------
-shards_local_dir = "data/tiny_shakespeare/shards/"
-text_local_dir = "data/tiny_shakespeare/text/"
+shards_local_dir = "tiny_shakespeare/shards/"
+text_local_dir = "tiny_shakespeare/text/"
 shard_size = int(2e6) # 1115394 < 1e7 tokens per shard, total of 1 shard
 
 # Create the cache local directory

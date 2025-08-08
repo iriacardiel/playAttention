@@ -6,4 +6,7 @@ __pycache__/
 *.pyd
 *.pkl
 *.db
-data/
+data/edu_fineweb10B/shards/
+data/edu_fineweb10B/text/
+data/tiny_shakespeare/shards/
+data/tiny_shakespeare/text/
