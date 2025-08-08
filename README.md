@@ -21,7 +21,9 @@ This is a list of videos, tutorials, and posts that have helped me throughout my
 
 ## Transformer Architecture (Decoder Only)
 
-![alt text](images/transformers.svg)
+<p align="center">
+  <img src="media/transformers.svg" width="750">
+</p>
 
 ## The code repository
 
@@ -85,7 +87,9 @@ Once the text split is tokenized, random sequences are sampled to generate `xb` 
 
 Each batch includes multiple input/output sequence pairs, as illustrated below:
 
-![alt text](images/batch_generation.svg)
+<p align="center">
+  <img src="media/batch_generation.svg" width="750">
+</p>
 
 At each training step, a random batch is extracted from the training split.
 During validation, batches are drawn from the validation split.
@@ -102,7 +106,10 @@ Instead, each token ID is projected into a lower-dimensional **embedding space**
 
 This is done through an Embedding Layer with learnable parameters.
 
-![alt text](images/embedding_process.svg)
+
+<p align="center">
+  <img src="media/embedding_process.svg" width="750">
+</p>
 
 After obtaining token embeddings, an additional **positional encoding** step is applied so that the model can incorporate information about the order of tokens in the sequence, something that pure embeddings alone do not capture.
 
@@ -110,7 +117,10 @@ After obtaining token embeddings, an additional **positional encoding** step is 
 
 _WIP_
 
-![alt text](images/attention.svg)
+
+<p align="center">
+  <img src="media/attention.svg" width="750">
+</p>
 
 #### Flash Attention (only implemented in `model_gpt2.py`)
 
@@ -138,13 +148,17 @@ else:
 
 _WIP_
 
-![alt text](images/feedforward.svg)
+<p align="center">
+  <img src="media/feedforward.svg" width="750">
+</p>
 
 ### LLM Head
 
 _WIP_
 
-![alt text](images/llm_head.svg)
+<p align="center">
+  <img src="media/llm_head.svg" width="750">
+</p>
 
 
 ## GPU Use
@@ -157,7 +171,9 @@ If you have a GPU available, use the following command to get the details about 
 watch -n 0.5 nvidia-smi
 ```
 
-![alt text](images/nvidia-smi-screenshot.png)
+<p align="center">
+  <img src="media/nvidia-smi-screenshot.png" width="750">
+</p>
 
 For example in the image above:
 
@@ -179,7 +195,9 @@ When training models, the choice of data type significantly impacts both perform
 
 Using lower-precision data types like **FP16 or BF16 can significantly reduce memory consumption** and improve **training speed**, especially for large-scale models. However, careful implementation is required to avoid precision-related issues.
 
-![alt text](images/NVIDIA-A100-details.png)
+<p align="center">
+  <img src="media/NVIDIA-A100-details.png" width="750">
+</p>
 
 ### Tensor Cores (only implemented in `training-gpt2.py`)
 
@@ -187,9 +205,13 @@ Using lower-precision data types like **FP16 or BF16 can significantly reduce me
 
 Tensor Cores are specialized hardware units in modern NVIDIA GPUs designed to speed up matrix operations, which are essential for deep learning. They work best with mixed-precision training. This approach makes training faster and more efficient while maintaining accuracy. 
 
-![alt text](images/tensor-cores.png)
+<p align="center">
+  <img src="media/tensor-cores.png" width="750">
+</p>
 
-![alt text](images/tensor-cores-2.png)
+<p align="center">
+  <img src="media/tensor-cores-2.png" width="750">
+</p>
 
 #### How it works?
 
@@ -218,7 +240,9 @@ Automatic Mixed Precision (AMP) is a feature in PyTorch that automatically selec
 
 https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html
 
-![alt text](images/autocast.png)
+<p align="center">
+  <img src="media/autocast.png" width="750">
+</p>
 
 #### Example Usage
 In the training scripts, you can see the use of `torch.autocast`:
@@ -237,9 +261,13 @@ As you can see, the `torch.autocast` context manager is used to wrap the forward
 
 Torch Compile is a feature in PyTorch that optimizes the execution of your model by reducing unnecessary memory movements and improving computational efficiency. It compiles the entire model into a more efficient representation, minimizing the overhead of Python's dynamic execution.
 
-![alt text](images/GPU-memory.png)
+<p align="center">
+  <img src="media/GPU-memory.png" width="750">
+</p>
 
-![alt text](images/GPU-memory-2.png)
+<p align="center">
+  <img src="media/GPU-memory-2.png" width="750">
+</p>
 
 #### Why Use Torch Compile?
 
