@@ -10,7 +10,7 @@ Will save shards to the local directory "data/tiny_shakespeare/shards/".
 import os
 import multiprocessing as mp
 import numpy as np
-from custom_tokenizers import tiktoken_tokenizer, char_level_tokenizer
+from models.custom_tokenizers import tiktoken_tokenizer, char_level_tokenizer
 from tqdm import tqdm # pip install tqdm
 
 # ------------------------------------------

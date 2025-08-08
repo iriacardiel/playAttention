@@ -1,5 +1,5 @@
 """
-GPT-2
+GPT
 =====================================
 
 This script implements a small language model based on the decoder-only transformer.
@@ -11,21 +11,13 @@ Architecture:
 - Feedforward networks
 - Positional embeddings
 - Residual connections and layer normalization
-
-Note:
- - We are building the GPT-2 model architecture (skelleton) so we can load the weights like in: https://www.youtube.com/watch?v=l8pRSuU81PU&t=123s
- - It is important to build it with the same names (different from the model_gpt.py script for the first GPT) and structure as the original GPT-2 model to be able to load the weights correctly.
-
 """
 
-import inspect
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from typing import Tuple, Optional
-import math
-from Config import GPTConfig, GPT2Config, ModelConfig
-from transformers import GPT2LMHeadModel
+from Config import ModelConfig
 
 
 
@@ -33,6 +25,71 @@ from transformers import GPT2LMHeadModel
 # MODEL ARCHITECTURE
 # =============================================================================
 
+class AttentionHead(nn.Module):
+    """
+    Single head of self-attention.
+    
+    Self-attention allows each token to "look at" all other tokens in the sequence
+    and decide how much to focus on each one when creating its representation.
+    
+    Key concepts:
+    - Query (Q): "What am I looking for?"
+    - Key (K): "What do I contain?"
+    - Value (V): "What should I contribute if I'm relevant?"
+    
+    The attention mechanism:
+    1. Compute attention scores: Q @ K^T (how much each token "likes" every other token)
+    2. Apply causal masking (prevent looking at future tokens)
+    3. Normalize with softmax to get attention weights
+    4. Apply weights to values: attention_weights @ V
+    
+    """
+    def __init__(self, config: ModelConfig):
+        super().__init__()
+        head_size = config.n_embd // config.n_head # head_size is a divisor of n_embd, the embedding dimension
+
+        # Linear transformations for Q, K, V (no bias needed)
+        self.key = nn.Linear(config.n_embd, head_size, bias=False) 
+        self.query = nn.Linear(config.n_embd, head_size, bias=False) 
+        self.value = nn.Linear(config.n_embd, head_size, bias=False)
+        
+        # Causal mask: lower triangular matrix prevents looking at future tokens
+        self.register_buffer('causal_mask', torch.tril(torch.ones(config.seq_size, config.seq_size)))
+        
+        # Dropout layer for regularization 
+        self.dropout = nn.Dropout(config.dropout) 
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        
+        B,T,C = x.shape # B: batch size, T: sequence length, C: head size
+        
+        # Compute Q, K, V projections
+        k = self.key(x) # (B,T,C)
+        q = self.query(x) # (B,T,C)
+        v = self.value(x) # (B,T,C)
+
+        # Compute attention scores ("affinities") between query and key vectors
+        scores = q @ k.transpose(-2,-1) # (B,T,C) @ (B, C, T) --> (B,T,T) # dot product between query and key vectors
+        
+        # Scale by sqrt(head_size) to prevent large values that cause vanishing gradients
+        scores = scores * C ** -0.5 # Scale the scores by the square root of the embedding dimension to prevent large values that can lead to numerical instability
+        
+        # Apply causal masking (set future positions to -inf). only for decoder self-attention, which needs to be autoregressive
+        scores = scores.masked_fill(
+            self.causal_mask[:T,:T] == 0, 
+            float('-inf')
+        )
+        
+        # Attention scores are normalized to probabilities
+        attention_weights = torch.functional.F.softmax(scores, dim=-1)
+        
+        # Dropout for regularization
+        attention_weights = self.dropout(attention_weights)
+
+        # Apply attention to values: weighted sum of the value vectors
+        out = attention_weights @ v  # (B,T,T) @ (B,T,C) --> (B,T,C)
+        
+        return out
 
 class MultiHeadAttention(nn.Module):
     """
@@ -52,56 +109,37 @@ class MultiHeadAttention(nn.Module):
     The outputs of all heads are concatenated and projected back to the
     original embedding dimension, allowing the model to use all these
     different types of attention simultaneously.
-    
-    (+) Efficient Implementation:
-    Same algorithm as the original GPT, but more efficient. Number of heads works as a new batch dimension.
-    Optimized for training on GPUs, where we can use the efficient matrix multiplication operations.
-    Mathematically equivalent to implementing each Head separately and concatenating.
     """
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
         assert config.n_embd % config.n_head == 0, "Embedding dimension must be divisible by number of heads"
         
-        # Multiple attention heads operating in parallel: key, query, value projections for all heads, but in a batch
-        self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd) # 3 because we have query, key, and value. This replaces the three linear layers for each Q,K,V
+        # Multiple attention heads operating in parallel
 
+        self.heads = nn.ModuleList([
+            AttentionHead(config)
+            for _ in range(config.n_head)
+        ])
 
         # Project concatenated heads back to embedding dimension
         self.c_proj = nn.Linear(config.n_embd, config.n_embd)
-        self.c_proj.CUSTOM_SCALE_INIT = 1 # New! Custom initialization scale to control standard deviation growth inside the residual stream: 1:18:00 https://www.youtube.com/watch?v=l8pRSuU81PU&t=123s
-
-        # not really a bias, more of a mask, but following the OpenAI/HF naming though, necessary only for the non-flash attention
-        if not self.config.flash_attention:
-            self.register_buffer("bias", torch.tril(torch.ones(config.seq_size, config.seq_size)).view(1, 1, config.seq_size, config.seq_size))
-
-    def forward(self, x):
-
-        B,T,C = x.size() # batch size, sequence length, embedding dimensionallity (n_embd)
-        # calculate query, key, value for all heads in a batch and move head forward to be the batch dimnension
-        # nh is "number of heads", hs is "head size", and C (number of channels) is nh *hs = n_embd
-        # e.g. in GPT-2, n_embd = 768, n_head = 12, so hs = 64
-        qkv = self.c_attn(x) # this is a linear layer that takes the input x and projects it to 3 * n_embd
-        q, k, v = qkv.split(self.config.n_embd, dim = 2) # split the output into three parts: query, key, value
-        k = k.view(B, T, self.config.n_head, C // self.config.n_head).transpose(1, 2) # reshape k to (B, n_head, T, hs)
-        q = q.view(B, T, self.config.n_head, C // self.config.n_head).transpose(1, 2) # reshape q to (B, n_head, T, hs)
-        v = v.view(B, T, self.config.n_head, C // self.config.n_head).transpose(1, 2) # reshape v to (B, n_head, T, hs)
-
-        if self.config.flash_attention: # New! Use Flash Attention for faster training: https://arxiv.org/abs/2205.14135
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-        else:
-            # attention (materializes the large (T,T) matrix for all the queries and keys)
-            att = (q@k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1))) # (B, n_head, T, T)
-            att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-            att = F.softmax(att, dim=-1)
-            y = att @ v # (B, n_head, T, hs)
-            
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble  all head outputs side by side 
-        # output projection
-        y = self.c_proj(y) # (B, T, C)
         
-        return y 
-    
+        # Dropout layer for regularization
+        self.dropout = nn.Dropout(config.dropout) 
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Run all heads in parallel and concatenate outputs
+        head_outputs = [h(x) for h in self.heads] # List of outputs from each head, each of shape (B,T,C)
+        out = torch.cat(head_outputs, dim=-1) # (B, T, n_embd)
+        
+        # Project back to embedding dimension
+        out = self.c_proj(out) 
+
+        # Apply dropout for regularization
+        out = self.dropout(out) 
+        
+        return out
     
     
 class FeedForward(nn.Module):
@@ -116,29 +154,30 @@ class FeedForward(nn.Module):
     independently. It's a simple MLP that:
     
     1. Expands the representation to a larger dimension (4x is standard)
-    2. Applies non-linear activation (GeLU)
+    2. Applies non-linear activation (ReLU)
     3. Projects back to the original dimension
     
     This allows the model to perform complex computations on the attention
     output and introduces non-linearity that's crucial for learning
     complex patterns.
     
-    Architecture: Linear -> GeLU -> Linear
+    Architecture: Linear -> ReLU -> Linear -> Dropout
     """
     def __init__(self, config: ModelConfig):
         super().__init__()
         
         hidden_size = 4 * config.n_embd                      # Standard transformer uses 4x expansion
         self.c_fc = nn.Linear(config.n_embd, hidden_size)    # Linear layer to expand to larger dimension
-        self.gelu = nn.GELU(approximate='tanh')              # Activation function (GeLU) replaced previous ReLU
+        self.relu = nn.ReLU()                                # Activation function (ReLU)
         self.c_proj = nn.Linear(hidden_size, config.n_embd)  # Linear layer to project back to embedding dimension
-        self.c_proj.CUSTOM_SCALE_INIT = 1                    # New! Custom initialization scale to control standard deviation growth inside the residual stream: 1:18:00 https://www.youtube.com/watch?v=l8pRSuU81PU&t=123s
+        self.dropout = nn.Dropout(config.dropout)            # Dropout for regularization
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         
         x = self.c_fc(x)
-        x = self.gelu(x)
+        x = self.relu(x)
         x = self.c_proj(x)
+        x = self.dropout(x)
         
         return x
 
@@ -181,9 +220,9 @@ class TransformerBlock(nn.Module):
            
         return x
     
-class GPT2Model(nn.Module):
+class GPTModel(nn.Module):
     """
-    GPT-2 Language Model.
+    GPT Language Model.
     
     Architecture Overview:
     =====================
@@ -204,39 +243,26 @@ class GPT2Model(nn.Module):
         
         self.config = config
         
-        self.transformer = nn.ModuleDict(dict(
-            
-            wte = nn.Embedding(config.vocab_size, config.n_embd), # Token ID -> embedding vector
-            wpe = nn.Embedding(config.seq_size, config.n_embd), # Position -> embedding vector
-            h = nn.ModuleList([
-                TransformerBlock(config) 
-                for _ in range(config.n_layer)
-                ]),
-            ln_f = nn.LayerNorm(config.n_embd)
-        )) # Stack of n_layer transformer blocks
+        self.wte = nn.Embedding(config.vocab_size, config.n_embd) # Token ID -> embedding vector
+        self.wpe = nn.Embedding(config.seq_size, config.n_embd) # Position -> embedding vector
+       
+        self.transformer_blocks = nn.Sequential(*[
+            TransformerBlock(config) 
+            for _ in range(config.n_layer)
+        ]) # Stack of n_layer transformer blocks
+        
+        self.ln_f = nn.LayerNorm(config.n_embd)                                         # Final normalization 
         
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)                   # Project to vocabulary 
-    
-        # NEW! Weight sharing scheme: tie the input and output embeddings
-        self.transformer.wte.weight = self.lm_head.weight # 1:06:32 at Karpathy's video: https://www.youtube.com/watch?v=l8pRSuU81PU&t=2383s
-    
+        
         # New! Init params
-        self.apply(self._init_weights) # 1:15:00 at Karpathy's video: https://www.youtube.com/watch?v=l8pRSuU81PU&t=2383s
-   
+        #self.apply(self._init_weights) # 1:15:00 at Karpathy's video: https://www.youtube.com/watch?v=l8pRSuU81PU&t=2383s
+ 
     # New! Init params    
     def _init_weights(self, module):
         """Initialize weights of the model."""
+        raise NotImplementedError("Weight initialization is not implemented yet for GPT.")
 
-        if isinstance(module, nn.Linear):
-            std = 0.02
-            if hasattr(module, 'CUSTOM_SCALE_INIT'):
-                std *= (2*self.config.n_layer)**-0.5 # the 2 comes for the 2 times residual connections occur 
-            torch.nn.init.normal_(module.weight, mean = 0.0, std = std)
-            if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
-        elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean = 0.0, std = 0.02)
- 
     def forward(self, idx: torch.Tensor, targets: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Forward pass through the model.
@@ -255,17 +281,16 @@ class GPT2Model(nn.Module):
         
         # Create embeddings for the input tokens and add positional embeddings
         pos = torch.arange(0, T, dtype=torch.long, device=idx.device) # position indices
-        pos_emb = self.transformer.wpe(pos) # position embeddings (T, n_embd)
-        tok_emb = self.transformer.wte(idx) # token embeddings (B,T, n_embd)
+        pos_emb = self.wpe(pos) # position embeddings (T, n_embd)
+        tok_emb = self.wte(idx) # token embeddings (B,T, n_embd)
 
         x = tok_emb + pos_emb # (B, T, n_embd)
         
         # Pass through the transformer blocks
-        for block in self.transformer.h:
-            x = block(x)
-            
+        x = self.transformer_blocks(x) # (B, T, n_embd)
+        
         # Final layer normalization
-        x = self.transformer.ln_f(x) # (B,T,C)
+        x = self.ln_f(x) # (B,T,n_embd) Layer normalization for the final output 
         
         # Linear layer to project the embeddings to the vocabulary size
         logits = self.lm_head(x) # (B,T,vocab_size)
@@ -285,53 +310,7 @@ class GPT2Model(nn.Module):
         """
         Loads the GPT-2 model weights from huggingface
         """
-        assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}, "Model type must be one of: gpt2, gpt2-medium, gpt2-large, gpt2-xl"
-        print("loading weights from huggingface pretrained gpt: %s" % model_type)
-        
-        # n_layer, n_head, n_embd are determined by the model_type
-        config_args = {
-            'gpt2':        {'n_layer': 12, 'n_head': 12, 'n_embd': 768},
-            'gpt2-medium': {'n_layer': 24, 'n_head': 16, 'n_embd': 1024},
-            'gpt2-large':  {'n_layer': 36, 'n_head': 20, 'n_embd': 1280},
-            'gpt2-xl':     {'n_layer': 48, 'n_head': 25, 'n_embd': 1600}
-        }[model_type]
-        
-        config_args['vocab_size'] = 50257 # GPT-2 uses a fixed vocabulary size
-        config_args['seq_size'] = 1024 # GPT-2 uses a fixed sequence length
-        # create a from-scratch initialized minGPT model
-
-        config = GPT2Config(**config_args)
-        model = GPT2Model(config)
-
-        sd = model.state_dict()
-        sd_keys = sd.keys()
-        sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')] # discard this mask / buffer, it is not needed
-        
-        # init huggingface/transformers model
-        model_hf = GPT2LMHeadModel.from_pretrained(model_type)
-        sd_hf = model_hf.state_dict()
-        
-        # copy while ensuring all of the parameters are aligned and match in names and shapes
-        sd_keys_hf = sd_hf.keys()
-        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.masked_bias')]  # ...
-        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.bias')] # ...
-        
-        transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
-        # Basically the openai checkpoints use a "Conv1D" module, but we only want to use a vanilla ...
-        # this means that we have to transpose these weights to match when we import them
-        assert len(sd_keys_hf) == len(sd_keys), "Mismatch in number of keys between HF and our model"
-        for k in sd_keys_hf:
-            if any(k.endswith(w) for w in transposed):
-                # special treatment for the Conv1D weights we need to transpose
-                assert sd_hf[k].shape[::-1] == sd[k].shape, f"Shape mismatch for {k}"
-                with torch.no_grad():
-                    sd[k].copy_(sd_hf[k].t()) # transpose 
-            else:
-                # vanilla copy over the other parameters
-                assert sd_hf[k].shape == sd[k].shape, f"Shape mismatch for {k}"
-                with torch.no_grad():
-                    sd[k].copy_(sd_hf[k])
-        return model
+        raise NotImplementedError("Loading from pretrained weights is not yet implemented for GPT.")
     
     
     def generate(self, idx: torch.Tensor, max_new_tokens: int, ddp_rank: int, device: torch.device) -> torch.Tensor:

@@ -7,25 +7,27 @@ from contextlib import nullcontext
 import inspect
 import math
 import os
-import csv
+import sys
 import json
-from typing import Literal, Optional, Tuple, Any
+from typing import Literal, Tuple
 import datetime
 import time
 import numpy as np
 from tqdm import trange
 from termcolor import colored,cprint
 import matplotlib.pyplot as plt
-from custom_tokenizers import tiktoken_tokenizer, char_level_tokenizer
-
 import torch
-from torch.nn import functional as F
-
-from Config import GPTConfig, GPT2Config, ModelConfig
-from model_gpt2 import GPT2Model
-
 import torch.distributed as dist # Run script with: torchrun --standalone --nproc_per_node=1 train_gpt2.py
 from torch.nn.parallel import DistributedDataParallel as DDP
+
+
+# Add the parent directory to the Python path to allow imports from the project root
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from models.custom_tokenizers import tiktoken_tokenizer, char_level_tokenizer
+from models.model_gpt import GPTModel
+from Config import GPTConfig, ModelConfig
+
 
 # =============================================================================
 # CONFIGURATION & SETUP
@@ -88,9 +90,9 @@ if torch.cuda.is_available():
 
 # GPU Optimization Settings
 # -----------------------
-TENSOR_CORES = True  # Set to True to enable Tensor Cores for faster matrix multiplications on supported GPUs
-TORCH_COMPILATION = True  # Set to True to enable PyTorch 2.0's compile feature for performance optimization
-AUTOCAST = True  # Mixed precision training https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html
+TENSOR_CORES = False  # Set to True to enable Tensor Cores for faster matrix multiplications on supported GPUs
+TORCH_COMPILATION = False  # Set to True to enable PyTorch 2.0's compile feature for performance optimization
+AUTOCAST = False  # Mixed precision training https://docs.pytorch.org/tutorials/recipes/recipes/amp_recipe.html
 
 torch.set_float32_matmul_precision('high') if TENSOR_CORES else None
 ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
@@ -98,15 +100,15 @@ ctx = nullcontext() if device_type == 'cpu' or AUTOCAST == False else torch.amp.
 
 # File paths
 TRAIN_ID = datetime.datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
-DATA_PATH = "data/edu_fineweb10B/shards/"
-REPORT_DIR = f'logs/GPT2_training_{TRAIN_ID}_{compute_device}'
+DATA_PATH = 'data/tiny_shakespeare/text/tinyshakespeare.txt'
+REPORT_DIR = f'results/GPT_training_{TRAIN_ID}_{compute_device}'
 # Create plots directory
 os.makedirs(REPORT_DIR, exist_ok=True)
 # =============================================================================
 # CONFIGURATION 
 # =============================================================================
 
-config = GPT2Config(compute_device=compute_device)
+config = GPTConfig(compute_device=compute_device)
 
 # =============================================================================
 # DATA PREPARATION
@@ -117,25 +119,43 @@ if master_process:
 tokenizer = char_level_tokenizer if config.selected_tokenizer == char_level_tokenizer.name else tiktoken_tokenizer
 config.vocab_size = tokenizer.n_vocab  if config.vocab_size is None else config.vocab_size # Set vocabulary size based on the tokenizer if it is not provided in the config
 
-class DataLoaderFromTokenShards:
+class DataLoaderFromTxt:
     def __init__(self, B:int, T:int, process_rank:int=0, num_processes:int=1, split:Literal['train', 'val']='train'):
         self.B = B
         self.T = T
         self.process_rank = process_rank
         self.num_processes = num_processes
         self.split = split  # Store split type
-        assert split in {'train','val'} 
+        assert split in {'train','val'}
 
-        # get the shard filenames
-        shard_names = os.listdir(DATA_PATH) # Get all shard file names in the root
-        shard_names = [s for s in shard_names if split in s] # Check if 'test' or 'train' is in the shard file name
-        shard_names = sorted(shard_names) # Sort shard names
-        shard_names = [os.path.join(DATA_PATH, s) for s in shard_names] # Create absolute path names for each shard
-        self.shard_names = shard_names
+        # At init load tokens from disk and store them in memory
+        try:
+            with open(DATA_PATH, 'r', encoding='utf-8') as f:
+                text = f.read()
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Data file not found: {DATA_PATH}")
         
-        assert len(shard_names) > 0, f"No shard files found for split {split}"
+        tokens = tokenizer.encode(text)  # Encode the text into tokens
+        self.tokens = torch.tensor(tokens, dtype=torch.long)
+        # Split the data into training and validation sets
+        split_idx = int(config.train_val_ratio * len(self.tokens)) 
+        self.train_tokens = self.tokens[:split_idx] # train split 
+        self.val_tokens = self.tokens[split_idx:] # validation split
+        
         if master_process:
-            cprint(f"found {len(shard_names)} for split {split}", compute_color)
+            cprint(f"loaded {len(self.tokens)} tokens", compute_color)
+            cprint(f"1 epoch = {len(self.tokens)// (self.B*self.T)} batches", compute_color)
+            data_preparation_summary = (
+            f"\n DATASET CALCULATIONS (Sanity Check):\n"
+            f"  Tokenizer: {tokenizer.name}\n"
+            f"  Tokenized text: {len(self.tokens):,} tokens\n"
+            f"  Vocabulary size: {tokenizer.n_vocab} unique tokens\n"
+            f"\nData split:\n"
+            f"  Training:   {len(self.train_tokens):,} tokens ({len(self.train_tokens)/len(self.tokens)*100:.1f}%)\n"
+            f"  Validation: {len(self.val_tokens):,} tokens ({len(self.val_tokens)/len(self.tokens)*100:.1f}%)\n"
+            )
+        
+            cprint(data_preparation_summary, compute_color)
 
         self.reset()
         self.vocab_size = tokenizer.n_vocab
@@ -144,8 +164,6 @@ class DataLoaderFromTokenShards:
         """
         Reset the data loader to the initial state.
         """
-        self.current_shard = 0
-        self.tokens = torch.tensor(np.load(self.shard_names[self.current_shard]), dtype = torch.long)  # Convert to long tensor
         self.current_position = self.process_rank * self.B * self.T  # state: initialize current position based on process rank to ensure each process gets a unique subset of the data
     
     # Batch generator
@@ -170,16 +188,21 @@ class DataLoaderFromTokenShards:
                 
         This implementation supports:
         - Supports DDP training by ensuring that each process gets a unique subset of the data based on its rank.
-        - Assumes that the data is already tokenized and stored in numpy arrays in the specified shard files.
+        
         """
         B, T = self.B, self.T
-        data = self.tokens
-        
-        # Ensure current_position does not exceed data length
-        if self.current_position >= len(data):
-            self.current_position = self.process_rank * self.B * self.T
+        data = self.train_tokens if self.split == 'train' else self.val_tokens  # Use train or validation tokens based on split
+        # v1
+        # starting_idx = torch.randint(len(data) - T, (B,))         # Sample random starting indices for each sequence in the batch
+        # xb = torch.stack([data[i:i+T] for i in starting_idx])          # Extract sequences and create targets
+        # yb = torch.stack([data[i+1:i+T+1] for i in starting_idx])      # Shift the sequence by one to the right to create the target
 
-        buf = data[self.current_position: self.current_position+ B*T + 1]
+        # v2
+        #Ensure current_position does not exceed data length
+        if self.current_position >= len(data):
+            self.reset()
+
+        buf = data[self.current_position: self.current_position + B * T + 1]
 
         # Safeguard against empty slices
         if len(buf) < B * T + 1:
@@ -189,11 +212,9 @@ class DataLoaderFromTokenShards:
         yb = buf[1:].view(B,T)  # targets (shifted) 
         self.current_position += B * T * self.num_processes # advance the current position by B*T*num_processes tokens to ensure each process gets a unique subset of the data
 
-        # If we reach the end of the tokens, move to the next shard at the first position
+        # If we reach the end of the tokens, reset to the beginning
         if self.current_position + (B * T * self.num_processes + 1) > len(data):
-            self.current_shard = (self.current_shard + 1) % len(self.shard_names)  # Move to the next shard
-            self.tokens = torch.tensor(np.load(self.shard_names[self.current_shard]), dtype = torch.long)  # Convert to long tensor
-            self.current_position = self.process_rank * B * T
+            self.reset()
 
         # Move to compute device (GPU or CPU)
         xb, yb = xb.to(device), yb.to(device)
@@ -201,21 +222,21 @@ class DataLoaderFromTokenShards:
         return xb, yb
 
 # Create dataloader instance
-train_loader = DataLoaderFromTokenShards(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split='train')
-val_loader_avg = DataLoaderFromTokenShards(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split='val')
-train_loader_avg = DataLoaderFromTokenShards(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split='train')
+train_loader = DataLoaderFromTxt(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split = 'train')
+val_loader_avg = DataLoaderFromTxt(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split = 'val')
+train_loader_avg = DataLoaderFromTxt(B=config.batch_size, T=config.seq_size, process_rank=ddp_rank, num_processes=ddp_world_size, split = 'train')
 
-# Macro batch: We will repeat the forward - backward grad_acc_microsteps times to simulate a larger batch size. We will call this micro-step.
+# Microsteps in training steps: We will repeat the forward - backward grad_acc_microsteps times to simulate a larger batch size. We will call this micro-step.
 tokens_per_step = config.tokens_per_step #config.tokens_per_step # 2**19  approx. 0.5M like in the paper
 total_batch_size = config.batch_size * config.seq_size  # Total batch size across all processes (DDP)
 assert tokens_per_step % (total_batch_size*ddp_world_size) == 0, "tokens_per_step must be divisible by total_batch_size * ddp_world_size"
 grad_acc_microsteps = tokens_per_step // (total_batch_size*ddp_world_size)
 
 if master_process:
-    cprint("\nBATCH CALCULATIONS", compute_color)
-    cprint(f"Macro batch size: {tokens_per_step} tokens", compute_color)
-    cprint(f"Total batch size (B*T): {config.batch_size} * {config.seq_size} = {total_batch_size} tokens", compute_color)
-    cprint(f"Grad accumulation steps (tokens_per_step // (total_batch_size*ddp_world_size)): {grad_acc_microsteps}", compute_color)
+    cprint("\nBATCH CALCULATIONS (Sanity Check)", compute_color)
+    cprint(f"{tokens_per_step} tokens_per_step to cover {config.n_epochs} epochs of training data", compute_color)
+    cprint(f"Microstep batch size (B*T): {config.batch_size} * {config.seq_size} = {total_batch_size} tokens", compute_color)
+    cprint(f"Grad accumulation microsteps (tokens_per_step // (total_batch_size*ddp_world_size)): {grad_acc_microsteps}", compute_color)
 
 # =============================================================================
 # MODEL INITIALIZATION
@@ -225,7 +246,7 @@ if master_process:
 
 
 # Create model instance
-model = GPT2Model(config)
+model = GPTModel(config)
 model.to(device) # this only works for the model, for tensors do tensor = tensor.to(device)
 
 
@@ -389,7 +410,7 @@ for step in pbar:
         # (2) Generate text from the model
         if True:
             # Context tokens
-            context_text = "Hello, I'm a language model,"
+            context_text = "\n"
             context_tokens = tokenizer.encode(context_text)
             context_tokens = torch.tensor(context_tokens, dtype=torch.long)
 
