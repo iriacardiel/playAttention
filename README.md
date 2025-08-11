@@ -2,7 +2,9 @@ Welcome to the playAttention ! To see the full documentation, please visit the [
 
 # What is playAttention? 
 
-This is a playground for understanding Attention and Transformers. For years, I felt that no matter how many videos or tutorials I watched, I never fully understood the architecture of Transformers at a low level. This repository is my way of getting hands-on experience by building my first Transformer-based language model. I hope it will be helpful to others who want to explore this fascinating field in the future.
+Hi! This is a playground for understanding **Attention** and **Transformers**. This repository is my way of getting **hands-on experience** by building my first **Transformer-based language models**: **GPT** and **GPT2**. I hope it will be helpful to others who want to explore this fascinating field in the future.
+
+> **Disclaimer**: This is an ongoing project—constantly evolving, growing, and being reviewed. As such, there may be mistakes, incomplete sections, or incorrect assumptions. Feedback and corrections are always welcome!
 
 # Resources
 
