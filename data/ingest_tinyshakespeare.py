@@ -29,7 +29,7 @@ os.makedirs(TEXT_CACHE_DIR, exist_ok=True)
 enc = char_level_tokenizer
 
 # Load dataset from local file 
-shakespeare_file = "data/tiny_shakespeare/text/tinyshakespeare.txt"
+shakespeare_file = "data/tiny_shakespeare/text/input.txt"
 try:
     with open(shakespeare_file, 'r', encoding='utf-8') as f:
         text = f.read()
@@ -87,7 +87,7 @@ def reconstruct_dataset():
 dataset = reconstruct_dataset()
 
 # Save to txt file to verify
-output_file = os.path.join(TEXT_CACHE_DIR, "reconstructed_tinyshakespeare.txt")
+output_file = os.path.join(TEXT_CACHE_DIR, "reconstructed_input.txt")
 with open(output_file, 'w', encoding='utf-8') as f:
     for item in dataset:
         f.write(item)

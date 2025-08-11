@@ -100,7 +100,7 @@ ctx = nullcontext() if device_type == 'cpu' or AUTOCAST == False else torch.amp.
 
 # File paths
 TRAIN_ID = datetime.datetime.now().strftime("%Y%m%d_%H%M") # Unique identifier for this training session
-DATA_PATH = 'data/tiny_shakespeare/text/tinyshakespeare.txt'
+DATA_PATH = 'data/tiny_shakespeare/text/input.txt'
 REPORT_DIR = f'results/GPT_training_{TRAIN_ID}_{compute_device}'
 # Create plots directory
 os.makedirs(REPORT_DIR, exist_ok=True)
@@ -121,27 +121,27 @@ config.vocab_size = tokenizer.n_vocab  if config.vocab_size is None else config.
 
 class DataLoaderFromTxt:
     def __init__(self, B:int, T:int, process_rank:int=0, num_processes:int=1, split:Literal['train', 'val']='train'):
-        self.B = B
-        self.T = T
-        self.process_rank = process_rank
-        self.num_processes = num_processes
-        self.split = split  # Store split type
+        self.B = B # batch size
+        self.T = T # sequence size
+        self.split = split  # Store split type train / val
         assert split in {'train','val'}
 
-        # At init load tokens from disk and store them in memory
+        # Load TEXT from disk and store them in memory
         try:
             with open(DATA_PATH, 'r', encoding='utf-8') as f:
                 text = f.read()
         except FileNotFoundError:
             raise FileNotFoundError(f"Data file not found: {DATA_PATH}")
         
-        tokens = tokenizer.encode(text)  # Encode the text into tokens
-        self.tokens = torch.tensor(tokens, dtype=torch.long)
+        # Tokenize text
+        self.tokens = torch.tensor(tokenizer.encode(text), dtype=torch.long)
+        
         # Split the data into training and validation sets
         split_idx = int(config.train_val_ratio * len(self.tokens)) 
         self.train_tokens = self.tokens[:split_idx] # train split 
         self.val_tokens = self.tokens[split_idx:] # validation split
         
+        # Print summary
         if master_process:
             cprint(f"loaded {len(self.tokens)} tokens", compute_color)
             cprint(f"1 epoch = {len(self.tokens)// (self.B*self.T)} batches", compute_color)
@@ -156,8 +156,15 @@ class DataLoaderFromTxt:
             )
         
             cprint(data_preparation_summary, compute_color)
-
+        
+        # DDP Settings
+        self.process_rank = process_rank
+        self.num_processes = num_processes
+        
+        # Reset
         self.reset()
+        
+        # Vocab size from the tokenizer
         self.vocab_size = tokenizer.n_vocab
             
     def reset(self):

@@ -1,7 +1,7 @@
 import tiktoken
 
 # Load text file
-with open('data/tiny_shakespeare/text/tinyshakespeare.txt', 'r') as f:
+with open('data/tiny_shakespeare/text/input.txt', 'r') as f:
     train_text = f.read()
     
 # CHARACTER LEVEL TOKENIZERS

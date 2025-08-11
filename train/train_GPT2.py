@@ -119,14 +119,12 @@ config.vocab_size = tokenizer.n_vocab  if config.vocab_size is None else config.
 
 class DataLoaderFromTokenShards:
     def __init__(self, B:int, T:int, process_rank:int=0, num_processes:int=1, split:Literal['train', 'val']='train'):
-        self.B = B
-        self.T = T
-        self.process_rank = process_rank
-        self.num_processes = num_processes
-        self.split = split  # Store split type
+        self.B = B # batch size
+        self.T = T # sequence size
+        self.split = split  # Store split type train / val
         assert split in {'train','val'} 
 
-        # get the shard filenames
+        # Load shard from disk and use them later to load the files
         shard_names = os.listdir(DATA_PATH) # Get all shard file names in the root
         shard_names = [s for s in shard_names if split in s] # Check if 'test' or 'train' is in the shard file name
         shard_names = sorted(shard_names) # Sort shard names
@@ -134,10 +132,19 @@ class DataLoaderFromTokenShards:
         self.shard_names = shard_names
         
         assert len(shard_names) > 0, f"No shard files found for split {split}"
+        
+        # Print summary
         if master_process:
             cprint(f"found {len(shard_names)} for split {split}", compute_color)
 
+        # DDP Settings
+        self.process_rank = process_rank
+        self.num_processes = num_processes
+        
+        # Reset
         self.reset()
+        
+        # Vocab size from the tokenizer
         self.vocab_size = tokenizer.n_vocab
             
     def reset(self):
