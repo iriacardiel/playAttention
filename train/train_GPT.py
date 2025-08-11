@@ -25,7 +25,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.custom_tokenizers import tiktoken_tokenizer, char_level_tokenizer
-from models.model_gpt import GPTModel
+from models.model_GPT import GPTModel
 from Config import GPTConfig, ModelConfig
 
 
