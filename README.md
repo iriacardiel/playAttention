@@ -57,27 +57,7 @@ python -m venv venv
 source venv/bin/activate && pip install -r requirements.txt
 ```
 
-> **Training** GPT / GPT2
-
-```
-python train_GPT.py 
-```
-
-```
-python train_GPT2.py 
-```
-
-> **Training** GPT / GPT2 with **DDP**:
-
-```
-torchrun --standalone --nproc_per_node=1 train/train_GPT2.py
-```
-
-```
-torchrun --standalone --nproc_per_node=1 train/train_GPT.py
-```
-
-> **Training** GPT / GPT2 with **DDP**:
+> **Training** GPT / GPT2 with **DDP** (supports single process):
 
 ```
 torchrun --standalone --nproc_per_node=1 train/train_GPT2.py
