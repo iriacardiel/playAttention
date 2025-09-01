@@ -81,7 +81,7 @@ class GPT2Config(ModelConfig):
     
     # Training Parameters
     
-    n_epochs: int = 0.05 # Should be 1 Number of epochs (times the model sees all the training data) to train the model. It will be used to calculate tokens_per_step. TOUCH THIS FIRST
+    n_epochs: int = 0.1 # Should be 1 Number of epochs (times the model sees all the training data) to train the model. It will be used to calculate tokens_per_step. TOUCH THIS FIRST
     grad_accum : int = 1 # should be 64 Gradient accumulation steps. It allows to accumulate gradients over multiple batches before updating the model weights. Use 1 to force the model to process all tokens in the batch at once.
     
     tokens_per_step: int = int(seq_size * batch_size * grad_accum) # Tokens per step. It will be used to calculate the training steps. (2**19 = 524288 ~ 0.5M TOKENS PER STEP for GPT2 on fineweb dataset)
